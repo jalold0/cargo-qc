@@ -6,11 +6,29 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
+vite*.log
 
 node_modules
 dist
 dist-ssr
 *.local
+coverage
+.cache
+.temp
+tmp
+temp
+*.tsbuildinfo
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# OS / archives
+Thumbs.db
+*.zip
+*.rar
+*.7z
 
 # Editor directories and files
 .vscode/*
