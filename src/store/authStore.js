@@ -80,11 +80,18 @@ export const useAuthStore = create(
 
         // ============================================================
         // QATLAM 1 — Supabase (agar ulangan bo'lsa)
+        // ------------------------------------------------------------
+        // 3 soniyali TIMEOUT — Supabase sekin yoki javob bermasa,
+        // darrov localStorage qatlamiga o'tamiz. Login hech qachon
+        // 3 soniyadan ko'p Supabase'da kutib turmaydi.
         // ============================================================
         let localUser = null;
         if (isUsersRemoteEnabled) {
           try {
-            const remoteUser = await findUserByUsernameRemote(normalizedUsername);
+            const remoteUser = await Promise.race([
+              findUserByUsernameRemote(normalizedUsername),
+              new Promise((resolve) => setTimeout(() => resolve(null), 3000)),
+            ]);
             if (remoteUser && remoteUser.active !== false) {
               const ok = await verifyPassword(normalizedPassword, remoteUser.password);
               if (ok) {

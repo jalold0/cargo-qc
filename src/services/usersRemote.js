@@ -28,13 +28,18 @@ function buildHeaders(extra = {}) {
   };
 }
 
-async function safeRequest(path, init = {}) {
+async function safeRequest(path, init = {}, timeoutMs = 5000) {
   if (!isUsersRemoteEnabled) return null;
+
+  // AbortController — timeout chiqsa request bekor qilinadi
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const response = await fetch(`${REST_BASE}/${path}`, {
       ...init,
       headers: buildHeaders(init.headers),
+      signal: controller.signal,
     });
 
     if (!response.ok) {
@@ -45,8 +50,10 @@ async function safeRequest(path, init = {}) {
     if (response.status === 204) return null;
     return await response.json();
   } catch {
-    // Network/CORS/timeout — silent fallback
+    // Network/CORS/timeout/abort — silent fallback
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
