@@ -330,6 +330,119 @@ export async function syncAllToSupabase({ onProgress } = {}) {
   };
 }
 
+// ============================================================
+// AUTO-SYNC — admin login bo'lganda fonda avtomatik chaqiriladi.
+// ------------------------------------------------------------
+// Strategiya:
+//   - localStorage va Supabase yozuv sonlarini taqqoslaymiz
+//   - Farq sezilarli bo'lsa (10+ yozuv), sync ishga tushadi
+//   - Bir sessiya'da faqat 1 marta ishlaydi (cache: sessionStorage)
+//   - Background — UI bloklamaydi
+// ============================================================
+
+const AUTO_SYNC_SESSION_KEY = 'cargo-qc-last-auto-sync';
+const AUTO_SYNC_COOLDOWN_MS = 30 * 60 * 1000; // 30 daqiqa
+
+export function shouldRunAutoSync() {
+  if (typeof window === 'undefined') return false;
+  if (!supabase.isSupabaseEnabled || !isUsersRemoteEnabled) return false;
+
+  try {
+    const lastSync = sessionStorage.getItem(AUTO_SYNC_SESSION_KEY);
+    if (!lastSync) return true;
+    const elapsed = Date.now() - parseInt(lastSync, 10);
+    return elapsed >= AUTO_SYNC_COOLDOWN_MS;
+  } catch {
+    return true;
+  }
+}
+
+export function markAutoSyncRun() {
+  if (typeof window === 'undefined') return;
+  try {
+    sessionStorage.setItem(AUTO_SYNC_SESSION_KEY, String(Date.now()));
+  } catch {
+    // sessionStorage band yoki o'chirilgan — silent fail
+  }
+}
+
+// Local va remote count'larini taqqoslab, sync kerakmi aniqlash.
+// Endpoint: HEAD request bilan Content-Range header'dan count olamiz.
+async function getRemoteCount(table) {
+  if (!supabase.isSupabaseEnabled) return null;
+  const url = `${import.meta.env.VITE_SUPABASE_URL}/rest/v1/${table}?select=*`;
+  try {
+    const response = await fetch(url, {
+      method: 'HEAD',
+      headers: {
+        apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+        Prefer: 'count=exact',
+        'Range-Unit': 'items',
+        Range: '0-0',
+      },
+    });
+    if (!response.ok) return null;
+    const contentRange = response.headers.get('content-range');
+    // Format: "0-0/19303" yoki "*/19303"
+    const match = contentRange?.match(/\/(\d+)$/);
+    return match ? parseInt(match[1], 10) : null;
+  } catch {
+    return null;
+  }
+}
+
+// Auto-sync entry point — admin login'dan keyin chaqiriladi
+export async function autoSyncIfNeeded({ onProgress } = {}) {
+  if (!shouldRunAutoSync()) {
+    return { ok: true, skipped: true, reason: 'cooldown' };
+  }
+
+  // Local counts
+  const localComplaints = getOtkEntries().length + getOtkArchive().length;
+  const localCompensated = getCompensatedLoadRegistry().length;
+  const localUsers = getSystemUsers().length;
+
+  // Remote counts (parallel)
+  const [remoteComplaintsCount, remoteCompensatedCount, remoteUsersCount] = await Promise.all([
+    getRemoteCount('complaints_entries'),
+    getRemoteCount('compensated_loads_registry'),
+    getRemoteCount('users'),
+  ]);
+
+  // Agar remote count'larni ololmadik, sync ishlatamiz (xavfsiz tarafdan)
+  const remoteUnavailable =
+    remoteComplaintsCount === null ||
+    remoteCompensatedCount === null ||
+    remoteUsersCount === null;
+
+  // Sezilarli farq — local'da ko'proq bor (10+ yozuv)
+  const needsSync =
+    remoteUnavailable ||
+    localComplaints - (remoteComplaintsCount || 0) >= 10 ||
+    localCompensated - (remoteCompensatedCount || 0) >= 5 ||
+    localUsers - (remoteUsersCount || 0) >= 1;
+
+  if (!needsSync) {
+    markAutoSyncRun();
+    return {
+      ok: true,
+      skipped: true,
+      reason: 'in_sync',
+      counts: {
+        complaints: { local: localComplaints, remote: remoteComplaintsCount },
+        compensated: { local: localCompensated, remote: remoteCompensatedCount },
+        users: { local: localUsers, remote: remoteUsersCount },
+      },
+    };
+  }
+
+  // Sync ishga tushadi
+  const result = await syncAllToSupabase({ onProgress });
+  if (result.ok) markAutoSyncRun();
+  return { ...result, autoTriggered: true };
+}
+
 // Connection test — har bir jadvalga alohida
 export async function testAllConnections() {
   const tests = [];

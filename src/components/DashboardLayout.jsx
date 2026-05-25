@@ -26,6 +26,7 @@ import {
   User as UserIcon,
 } from 'lucide-react';
 import { clsx } from 'clsx';
+import toast from 'react-hot-toast';
 
 const NOTIFICATION_SEEN_STORAGE_KEY = 'cargo-qc-notification-seen';
 
@@ -188,6 +189,43 @@ export default function DashboardLayout() {
       unsubscribes = [];
     };
   }, []);
+
+  // ============================================================
+  // AUTO-SYNC — admin login bo'lgach, fonda local↔cloud tekshiruvi.
+  // ------------------------------------------------------------
+  // Foydalanuvchi sezmaydi (toast bilan info beradi). Faqat:
+  //   1) Admin rolida
+  //   2) Supabase ulangan
+  //   3) Oxirgi avto-sync 30 daqiqadan ko'p oldin bo'lgan
+  // ============================================================
+  useEffect(() => {
+    if (!user || !isAdminRole(user.role)) return;
+    const hasSupabaseEnv = Boolean(
+      import.meta.env.VITE_SUPABASE_URL && import.meta.env.VITE_SUPABASE_ANON_KEY
+    );
+    if (!hasSupabaseEnv) return;
+
+    // 10 soniya kutamiz — boshlang'ich yuklanish tugashi uchun
+    const timer = window.setTimeout(async () => {
+      try {
+        const { autoSyncIfNeeded } = await import('../services/supabaseSyncManager');
+        const result = await autoSyncIfNeeded();
+        if (result.skipped) {
+          // Hammasi mos — toast yo'q, sokin
+          return;
+        }
+        if (result.ok && result.totalSynced > 0) {
+          toast.success(`☁️ ${result.totalSynced} ta yozuv Supabase'ga sync qilindi`, {
+            duration: 4000,
+          });
+        }
+      } catch {
+        // Silent fail — manual sync har doim mavjud
+      }
+    }, 10000);
+
+    return () => window.clearTimeout(timer);
+  }, [user?.id, user?.role]);
 
   useEffect(() => {
     setActiveToolbarMenu(null);
