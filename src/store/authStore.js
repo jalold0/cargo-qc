@@ -99,8 +99,8 @@ export const useAuthStore = create(
         // ============================================================
         // QATLAM 2 — localStorage system users (yoki Supabase fallback)
         // ============================================================
+        const users = getSystemUsers();
         if (!localUser) {
-          const users = getSystemUsers();
           for (const item of users) {
             if (item.active === false) continue;
             if (item.username.trim().toLowerCase() !== normalizedUsername) continue;
@@ -120,7 +120,6 @@ export const useAuthStore = create(
               (u) => u.active !== false && isJaloldinMirzakbarovUser(u)
             );
             if (jaloldinAccount) {
-              // eslint-disable-next-line no-await-in-loop
               const ok = await verifyPassword(normalizedPassword, jaloldinAccount.password);
               if (ok) localUser = jaloldinAccount;
             }
