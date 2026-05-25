@@ -1,22 +1,57 @@
-const CRM_BASE = 'http://192.168.4.100:3000';
+// ============================================================
+// crmScraper.js — IPOST ichki tarmoq CRM'idan ma'lumot olish
+// ------------------------------------------------------------
+// Bu skreper FAQAT ichki tarmoq (LAN)'dan ishlaydi:
+//   - IPOST ofis kompyuterida (192.168.4.100:3000 ko'rinadi)
+//   - Yoki localhost dev rejimida
+//
+// Internet (https://cargo-qc.vercel.app) orqali:
+//   - HTTPS sahifadan HTTP IP'ga so'rov — Mixed Content xato
+//   - CORS to'sadi (lokal tarmoq access denied)
+//   - Vaqt yo'qotish + console error spam
+//
+// Shu sababli production HTTPS'da skreper avtomatik o'chiriladi.
+// ============================================================
+
+// CRM base URL — env'dan o'qiladi, default LAN IP
+const CRM_BASE = import.meta.env.VITE_CRM_BASE_URL || 'http://192.168.4.100:3000';
+
+// Production HTTPS'da skreperni ishlatish mantiqsiz
+function isScraperUsable() {
+  if (typeof window === 'undefined') return false;
+  // HTTPS sahifadan HTTP'ga so'rov yuborib bo'lmaydi (Mixed Content)
+  const isHttpsPage = window.location.protocol === 'https:';
+  const isHttpCrm = CRM_BASE.startsWith('http://');
+  if (isHttpsPage && isHttpCrm) return false;
+  // localhost'da test qilish mumkin
+  return true;
+}
 
 async function fetchCRMPage(path = '/module-102') {
+  if (!isScraperUsable()) return null;
+
   try {
+    // 5 soniya timeout — internal LAN bo'lsa juda tez bo'ladi
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+
     const response = await fetch(`${CRM_BASE}${path}`, {
       credentials: 'include',
       headers: {
         Accept: 'text/html',
         'Cache-Control': 'no-cache',
       },
+      signal: controller.signal,
     });
+    clearTimeout(timer);
 
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
+      return null;
     }
 
     return await response.text();
-  } catch (error) {
-    console.warn('[crmScraper] fetch xato:', error.message);
+  } catch {
+    // Silent fail — agar LAN'da bo'lmasangiz, normal
     return null;
   }
 }

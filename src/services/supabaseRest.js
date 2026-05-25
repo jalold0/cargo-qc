@@ -17,7 +17,17 @@ function buildHeaders(extra = {}) {
 // Sekin internet yoki Supabase javob bermasa, hang qilmaslik.
 const REQUEST_TIMEOUT_MS = 15000;
 
-async function supabaseRequest(path, init = {}) {
+// Free tier loyiha "uyqudan uyg'onish" 5-15 soniya olishi mumkin.
+// 503/504 status — bu vaqtinchalik, retry'da ishlaydi.
+const RETRY_STATUS_CODES = new Set([502, 503, 504, 408, 429]);
+const MAX_RETRIES = 3;
+const RETRY_DELAY_MS = 2000;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function supabaseRequest(path, init = {}, attempt = 0) {
   if (!isSupabaseEnabled) {
     throw new Error('Supabase is not configured.');
   }
@@ -32,6 +42,15 @@ async function supabaseRequest(path, init = {}) {
       signal: controller.signal,
     });
 
+    // Vaqtinchalik xato'lar uchun retry — Supabase "uyg'onish" yoki
+    // tarmoq qisqa muddatli xato'lari uchun avtomatik takrorlash
+    if (!response.ok && RETRY_STATUS_CODES.has(response.status) && attempt < MAX_RETRIES) {
+      clearTimeout(timer);
+      const delay = RETRY_DELAY_MS * (attempt + 1); // 2s, 4s, 6s — backoff
+      await sleep(delay);
+      return supabaseRequest(path, init, attempt + 1);
+    }
+
     if (!response.ok) {
       const text = await response.text();
       throw new Error(text || `Supabase request failed with ${response.status}`);
@@ -39,6 +58,19 @@ async function supabaseRequest(path, init = {}) {
 
     if (response.status === 204) return null;
     return await response.json();
+  } catch (error) {
+    // Network/abort xato'lari uchun ham retry (faqat birinchi 1 marta)
+    if (
+      attempt < 1 &&
+      error?.name !== 'AbortError' &&
+      typeof error?.message === 'string' &&
+      /network|fetch|connect/i.test(error.message)
+    ) {
+      clearTimeout(timer);
+      await sleep(RETRY_DELAY_MS);
+      return supabaseRequest(path, init, attempt + 1);
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
   }
