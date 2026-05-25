@@ -387,7 +387,13 @@ function hydrateComplaintsFromRemoteInBackground() {
       const probe = await supabase.testComplaintsSupabaseConnection();
       if (!probe.ok) return;
 
-      const remote = await supabase.fetchComplaintsRemote();
+      // LIGHT HYDRATION — active + so'nggi 500 archive yozuv.
+      // 19K archive'ni darrov tortish telefonni qotirib qo'yadi.
+      // To'liq archive ComplaintsPage'da Archive tabini bosganda yuklanadi.
+      const remote = await supabase.fetchComplaintsRemote({
+        includeArchive: true,
+        archiveLimit: 500,
+      });
       const localActive = normalizeEntries(decodeEntryCollection(readJson(ENTRIES_KEY, [])));
       const localArchive = normalizeEntries(decodeEntryCollection(readJson(ARCHIVE_KEY, [])));
       const merged = mergeComplaintSnapshots(localActive, localArchive, remote.active || [], remote.archive || []);
@@ -399,10 +405,11 @@ function hydrateComplaintsFromRemoteInBackground() {
         replaceComplaintSnapshotsLocal(merged.active, merged.archive);
       }
 
-      if (
-        JSON.stringify(remote.active || []) !== JSON.stringify(merged.active) ||
-        JSON.stringify(remote.archive || []) !== JSON.stringify(merged.archive)
-      ) {
+      // Push'ni faqat local'da QO'SHIMCHA yozuv bo'lsa qilamiz (xavfsizlik)
+      const localHasMore =
+        localActive.length > (remote.active || []).length ||
+        localArchive.length > 500; // bizning archiveLimit
+      if (localHasMore) {
         await supabase.upsertComplaintsSnapshotRemote(merged.active, merged.archive);
       }
     } catch {

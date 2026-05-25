@@ -13,23 +13,35 @@ function buildHeaders(extra = {}) {
   };
 }
 
+// Bitta so'rovning maksimal timeout'i — 15 soniya.
+// Sekin internet yoki Supabase javob bermasa, hang qilmaslik.
+const REQUEST_TIMEOUT_MS = 15000;
+
 async function supabaseRequest(path, init = {}) {
   if (!isSupabaseEnabled) {
     throw new Error('Supabase is not configured.');
   }
 
-  const response = await fetch(`${REST_BASE}/${path}`, {
-    ...init,
-    headers: buildHeaders(init.headers),
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || `Supabase request failed with ${response.status}`);
+  try {
+    const response = await fetch(`${REST_BASE}/${path}`, {
+      ...init,
+      headers: buildHeaders(init.headers),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(text || `Supabase request failed with ${response.status}`);
+    }
+
+    if (response.status === 204) return null;
+    return await response.json();
+  } finally {
+    clearTimeout(timer);
   }
-
-  if (response.status === 204) return null;
-  return response.json();
 }
 
 // ============================================================
@@ -202,8 +214,32 @@ function fromRemoteComplaintEntry(row) {
   };
 }
 
-export async function fetchComplaintsRemote() {
-  // 19K+ yozuv bo'lsa ham — sahifalab to'liq olamiz
+// Initial boot uchun — faqat ACTIVE + so'nggi 200 archive yozuv
+// 19K archive'ni darrov tortish telefonni qotirib qo'yadi.
+export async function fetchComplaintsRemote({ includeArchive = true, archiveLimit = null } = {}) {
+  if (!includeArchive) {
+    // Faqat active complaints (is_archived=false)
+    const rows = await fetchAllPaginated(
+      'complaints_entries?select=*&is_deleted=eq.false&is_archived=eq.false&order=date.desc'
+    );
+    const mapped = Array.isArray(rows) ? rows.map(fromRemoteComplaintEntry) : [];
+    return { active: mapped, archive: [] };
+  }
+
+  if (archiveLimit && archiveLimit > 0) {
+    // Active + so'nggi N archive yozuv (boot uchun light variant)
+    const [activeRows, archiveRows] = await Promise.all([
+      fetchAllPaginated('complaints_entries?select=*&is_deleted=eq.false&is_archived=eq.false&order=date.desc'),
+      supabaseRequest(
+        `complaints_entries?select=*&is_deleted=eq.false&is_archived=eq.true&order=date.desc&limit=${archiveLimit}`
+      ),
+    ]);
+    const active = Array.isArray(activeRows) ? activeRows.map(fromRemoteComplaintEntry) : [];
+    const archive = Array.isArray(archiveRows) ? archiveRows.map(fromRemoteComplaintEntry) : [];
+    return { active, archive };
+  }
+
+  // To'liq — barcha active + barcha archive (manual sync uchun)
   const rows = await fetchAllPaginated('complaints_entries?select=*&is_deleted=eq.false&order=date.desc');
   const mapped = Array.isArray(rows) ? rows.map(fromRemoteComplaintEntry) : [];
   return {

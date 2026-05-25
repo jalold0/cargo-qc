@@ -403,6 +403,26 @@ export async function autoSyncIfNeeded({ onProgress } = {}) {
   const localCompensated = getCompensatedLoadRegistry().length;
   const localUsers = getSystemUsers().length;
 
+  // ============================================================
+  // KRITIK XAVFSIZLIK: bo'sh qurilmada hech narsa push qilmaymiz!
+  // Aks holda DEFAULT_USERS (3 ta) real users (9 ta) ustiga
+  // yozilib, server ma'lumotini buzishi mumkin edi.
+  // ============================================================
+  const isFreshDevice =
+    localComplaints === 0 &&
+    localCompensated === 0 &&
+    localUsers <= 3; // faqat DEFAULT_USERS
+
+  if (isFreshDevice) {
+    markAutoSyncRun();
+    return {
+      ok: true,
+      skipped: true,
+      reason: 'fresh_device',
+      message: 'Bo\'sh qurilma — ma\'lumot pull qilinmoqda, push qilinmaydi',
+    };
+  }
+
   // Remote counts (parallel)
   const [remoteComplaintsCount, remoteCompensatedCount, remoteUsersCount] = await Promise.all([
     getRemoteCount('complaints_entries'),
@@ -410,18 +430,21 @@ export async function autoSyncIfNeeded({ onProgress } = {}) {
     getRemoteCount('users'),
   ]);
 
-  // Agar remote count'larni ololmadik, sync ishlatamiz (xavfsiz tarafdan)
-  const remoteUnavailable =
-    remoteComplaintsCount === null ||
-    remoteCompensatedCount === null ||
-    remoteUsersCount === null;
+  // Sezilarli farq — local'da ko'proq bor (10+ yozuv).
+  // Remote unavailable bo'lsa — sync qilmaymiz (xavf: ma'lumot buzish)
+  if (remoteComplaintsCount === null || remoteCompensatedCount === null || remoteUsersCount === null) {
+    return {
+      ok: false,
+      skipped: true,
+      reason: 'remote_count_unavailable',
+      message: 'Supabase count olib bo\'lmadi, sync xavfli',
+    };
+  }
 
-  // Sezilarli farq — local'da ko'proq bor (10+ yozuv)
   const needsSync =
-    remoteUnavailable ||
-    localComplaints - (remoteComplaintsCount || 0) >= 10 ||
-    localCompensated - (remoteCompensatedCount || 0) >= 5 ||
-    localUsers - (remoteUsersCount || 0) >= 1;
+    localComplaints - remoteComplaintsCount >= 10 ||
+    localCompensated - remoteCompensatedCount >= 5 ||
+    localUsers - remoteUsersCount >= 1;
 
   if (!needsSync) {
     markAutoSyncRun();
