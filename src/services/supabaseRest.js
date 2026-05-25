@@ -32,6 +32,35 @@ async function supabaseRequest(path, init = {}) {
   return response.json();
 }
 
+// ============================================================
+// PAGINATION HELPER — PostgREST default max-rows = 1000
+// ------------------------------------------------------------
+// Katta jadvallar uchun (complaints_entries 19K+) — limit+offset
+// orqali sahifalab to'liq olib kelamiz.
+// ============================================================
+const PAGE_SIZE = 1000;
+
+async function fetchAllPaginated(basePath) {
+  if (!isSupabaseEnabled) {
+    throw new Error('Supabase is not configured.');
+  }
+
+  const allRows = [];
+  let offset = 0;
+  // Safety cap: 200 sahifa × 1000 = 200K yozuv (yetar)
+  for (let i = 0; i < 200; i += 1) {
+    const sep = basePath.includes('?') ? '&' : '?';
+    const path = `${basePath}${sep}limit=${PAGE_SIZE}&offset=${offset}`;
+    // eslint-disable-next-line no-await-in-loop
+    const rows = await supabaseRequest(path);
+    if (!Array.isArray(rows) || rows.length === 0) break;
+    allRows.push(...rows);
+    if (rows.length < PAGE_SIZE) break; // last page
+    offset += PAGE_SIZE;
+  }
+  return allRows;
+}
+
 function toRemoteAssistantAiRecord(item) {
   return {
     id: item.id,
@@ -67,7 +96,7 @@ function fromRemoteAssistantAiRecord(row) {
 }
 
 export async function fetchAssistantAiRequestsRemote() {
-  const rows = await supabaseRequest('assistant_ai_requests?select=*&order=created_at.desc');
+  const rows = await fetchAllPaginated('assistant_ai_requests?select=*&order=created_at.desc');
   return Array.isArray(rows) ? rows.map(fromRemoteAssistantAiRecord) : [];
 }
 
@@ -174,7 +203,8 @@ function fromRemoteComplaintEntry(row) {
 }
 
 export async function fetchComplaintsRemote() {
-  const rows = await supabaseRequest('complaints_entries?select=*&is_deleted=eq.false&order=date.desc');
+  // 19K+ yozuv bo'lsa ham — sahifalab to'liq olamiz
+  const rows = await fetchAllPaginated('complaints_entries?select=*&is_deleted=eq.false&order=date.desc');
   const mapped = Array.isArray(rows) ? rows.map(fromRemoteComplaintEntry) : [];
   return {
     active: mapped.filter((item) => !item.isArchived),
@@ -260,7 +290,7 @@ function fromRemoteCompensatedRegistryItem(row) {
 }
 
 export async function fetchCompensatedRegistryRemote() {
-  const rows = await supabaseRequest('compensated_loads_registry?select=*&order=track_code.asc');
+  const rows = await fetchAllPaginated('compensated_loads_registry?select=*&order=track_code.asc');
   return Array.isArray(rows) ? rows.map(fromRemoteCompensatedRegistryItem) : [];
 }
 

@@ -94,8 +94,18 @@ function fromRemoteUser(row) {
 // ------------------------------------------------------------
 
 export async function fetchUsersRemote() {
-  const rows = await safeRequest('users?select=*&order=created_at.asc');
-  return Array.isArray(rows) ? rows.map(fromRemoteUser).filter(Boolean) : [];
+  // Users — odatda 100tagacha, lekin pagination xavfsizlik uchun
+  const allUsers = [];
+  let offset = 0;
+  for (let i = 0; i < 10; i += 1) {
+    // eslint-disable-next-line no-await-in-loop
+    const rows = await safeRequest(`users?select=*&order=created_at.asc&limit=1000&offset=${offset}`);
+    if (!Array.isArray(rows) || rows.length === 0) break;
+    allUsers.push(...rows);
+    if (rows.length < 1000) break;
+    offset += 1000;
+  }
+  return allUsers.map(fromRemoteUser).filter(Boolean);
 }
 
 // Username bo'yicha qidirish — login uchun asosiy entry point.
