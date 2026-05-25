@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, Check, ImageUp, Pencil, Plus, RotateCcw, Save, Shield, Trash2, UserRound, X } from 'lucide-react';
+import { clsx } from 'clsx';
+import { AlertTriangle, Check, ImageUp, Pause, Pencil, Play, Plus, RotateCcw, Save, Shield, Trash2, UserRound, X } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { DEFAULT_USERS, getOtkSettings, getSystemUsers, publicUser, saveSystemUsers, subscribeToOtkData } from '../services/localData';
 import { hashPassword, isHashed } from '../services/authHash';
@@ -138,6 +139,21 @@ export function UsersManagementSection({ embedded = false, hideHeader = false })
     updateUsers(users.filter((user) => user.id !== id));
     setDeleteConfirm(null);
     toast.success(t('deleted'));
+  };
+
+  // Active/Inactive toggle — yangi yuk faqat aktiv hodimlarga biriktiriladi
+  const toggleUserActive = (id) => {
+    const target = users.find((u) => u.id === id);
+    if (!target) return;
+    const willBeActive = target.active === false ? true : false;
+    updateUsers(
+      users.map((u) =>
+        u.id === id
+          ? { ...u, active: willBeActive, updatedAt: new Date().toISOString() }
+          : u,
+      ),
+    );
+    toast.success(willBeActive ? 'Hodim aktiv qilindi' : 'Hodim faolsizlantirildi');
   };
 
   const resetUsers = () => {
@@ -402,8 +418,24 @@ export function UsersManagementSection({ embedded = false, hideHeader = false })
 
                   return (
                     <Fragment key={user.id}>
-                      <tr className="transition hover:bg-slate-50 dark:hover:bg-slate-800/50">
-                        <td className="px-4 py-3 font-medium text-slate-950 dark:text-white">{user.full_name}</td>
+                      <tr
+                        className={clsx(
+                          'transition',
+                          user.active === false
+                            ? 'bg-slate-50/60 opacity-70 hover:bg-slate-100/60 dark:bg-slate-900/40 dark:hover:bg-slate-800/40'
+                            : 'hover:bg-slate-50 dark:hover:bg-slate-800/50',
+                        )}
+                      >
+                        <td className="px-4 py-3 font-medium text-slate-950 dark:text-white">
+                          <div className="flex items-center gap-2">
+                            <span>{user.full_name}</span>
+                            {user.active === false && (
+                              <span className="inline-flex rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-600 dark:bg-slate-700 dark:text-slate-300">
+                                Pauza
+                              </span>
+                            )}
+                          </div>
+                        </td>
                         <td className="px-4 py-3">
                           {user.avatarUrl ? (
                             <img src={user.avatarUrl} alt={user.full_name} className="h-9 w-9 rounded-full object-cover ring-1 ring-slate-200 dark:ring-slate-700" />
@@ -454,6 +486,21 @@ export function UsersManagementSection({ embedded = false, hideHeader = false })
                         </td>
                         <td className="px-4 py-3 text-right">
                           <div className="relative flex items-center justify-end gap-1">
+                            {/* Active/Inactive toggle — admin'larda yo'q (admin har doim aktiv) */}
+                            {!isAdminRole(user.role) && (
+                              <button
+                                onClick={() => toggleUserActive(user.id)}
+                                className={clsx(
+                                  'rounded-lg p-1.5 transition',
+                                  user.active === false
+                                    ? 'text-emerald-500 hover:bg-emerald-50 hover:text-emerald-700 dark:hover:bg-emerald-500/10'
+                                    : 'text-slate-400 hover:bg-amber-50 hover:text-amber-600 dark:hover:bg-amber-500/10',
+                                )}
+                                title={user.active === false ? 'Aktiv qilish' : 'Pauza qilish'}
+                              >
+                                {user.active === false ? <Play size={16} /> : <Pause size={16} />}
+                              </button>
+                            )}
                             <button
                               onClick={() => startEditUser(user)}
                               className="rounded-lg p-1.5 text-slate-400 transition hover:bg-emerald-50 hover:text-emerald-600 dark:hover:bg-emerald-500/10"
