@@ -980,6 +980,47 @@ async function refreshRemoteBackedData(force = false) {
         }
       }
 
+      // Users — multi-device sync uchun
+      if (isUsersRemoteEnabled) {
+        if (isRemoteSyncPending('users')) {
+          // skip stale remote users while local changes are settling
+        } else {
+          try {
+            const remoteUsers = await fetchUsersRemote();
+            if (Array.isArray(remoteUsers) && remoteUsers.length > 0) {
+              const local = readJson(USERS_KEY, []);
+              const byUsername = new Map();
+              local.forEach((u) => {
+                const k = String(u?.username || '').trim().toLowerCase();
+                if (k) byUsername.set(k, u);
+              });
+              remoteUsers.forEach((r) => {
+                const k = String(r?.username || '').trim().toLowerCase();
+                if (!k) return;
+                const existing = byUsername.get(k);
+                if (!existing) {
+                  byUsername.set(k, r);
+                  return;
+                }
+                const remoteTime = new Date(r.updatedAt || r.createdAt || 0).getTime();
+                const localTime = new Date(existing.updatedAt || existing.createdAt || 0).getTime();
+                if (remoteTime >= localTime) byUsername.set(k, r);
+              });
+              const merged = Array.from(byUsername.values()).map(normalizeSystemUserRecord);
+              const localStr = JSON.stringify(local);
+              const mergedStr = JSON.stringify(merged);
+              if (localStr !== mergedStr) {
+                writeJson(USERS_KEY, merged);
+                computedCache.users = { raw: null, value: null };
+                dispatchDataChanged('users');
+              }
+            }
+          } catch {
+            // silent fallback
+          }
+        }
+      }
+
       lastRemoteRefreshAt = Date.now();
     } catch {
       // stay in local mode silently
@@ -2430,10 +2471,15 @@ function initOtkHubIfNeeded() {
   window.addEventListener('focus', onFocus);
   document.addEventListener('visibilitychange', onVisibility);
   refreshRemoteBackedData(true);
-  // Bitta global interval — barcha subscriber'lar uchun
+  // Bitta global interval — barcha subscriber'lar uchun.
+  // 60 soniya — performance uchun (19K yozuv qayta tortilishi og'ir).
+  // Realtime subscription darrov yangilanadi, interval faqat zaxira.
+  // Tab ko'rinmaganda interval skip qiladi (CPU/network tejash).
   otkHubIntervalId = window.setInterval(() => {
-    refreshRemoteBackedData();
-  }, 25000);
+    if (document.visibilityState === 'visible') {
+      refreshRemoteBackedData();
+    }
+  }, 60000);
 }
 
 export function subscribeToOtkData(callback, options = {}) {

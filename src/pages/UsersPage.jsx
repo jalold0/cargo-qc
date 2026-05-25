@@ -452,7 +452,21 @@ export function UsersManagementSection({ embedded = false, hideHeader = false })
                             ? formatWorkTimeRange(user)
                             : '-'}
                         </td>
-                        <td className="px-4 py-3 font-mono text-slate-500 dark:text-slate-400">{user.password}</td>
+                        <td className="px-4 py-3 text-slate-500 dark:text-slate-400">
+                          {user.password ? (
+                            <span
+                              className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-300 dark:ring-emerald-500/20"
+                              title={isHashed(user.password) ? 'SHA-256 bilan hashlangan' : 'Plain text — xavfsiz emas'}
+                            >
+                              <span>••••••••</span>
+                              {isHashed(user.password) && (
+                                <span className="text-[9px] uppercase tracking-wider opacity-75">hash</span>
+                              )}
+                            </span>
+                          ) : (
+                            <span className="text-xs italic text-slate-400">o'rnatilmagan</span>
+                          )}
+                        </td>
                         <td className="px-4 py-3">
                           <div className="flex flex-wrap gap-1.5">
                             {isAdminRole(user.role) ? (

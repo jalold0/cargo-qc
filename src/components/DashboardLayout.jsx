@@ -178,6 +178,7 @@ export default function DashboardLayout() {
         unsubscribes.push(realtime.subscribeToCompensated(proxy('compensated')));
         unsubscribes.push(realtime.subscribeToAssistantAi(proxy('assistant_ai')));
         unsubscribes.push(realtime.subscribeToSettings(proxy('settings')));
+        unsubscribes.push(realtime.subscribeToUsers(proxy('users')));
       } catch (error) {
         // Realtime ulanmagan bo'lsa — silent fallback (localStorage bilan ishlash davom etadi)
       }

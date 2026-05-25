@@ -101,6 +101,10 @@ export function subscribeToSettings(callback) {
   return subscribeToTable('app_settings', callback);
 }
 
+export function subscribeToUsers(callback) {
+  return subscribeToTable('users', callback);
+}
+
 // =============================================================================
 // Connection health probe
 // =============================================================================
