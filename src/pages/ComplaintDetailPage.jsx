@@ -12,6 +12,7 @@ import {
   getWaitingDays,
   updateOtkEntry,
 } from '../services/localData';
+import { isAdminRole } from '../services/access';
 import { useAuthStore } from '../store/authStore';
 import { useT, useValueLabel } from '../i18n';
 
@@ -23,10 +24,12 @@ export default function ComplaintDetailPage() {
   const { user } = useAuthStore();
   const [settings] = useState(() => getOtkSettings());
   const [entry] = useState(() => getOtkEntryById(id));
+  const isArchivedEntry = entry?.status === 'Yopildi';
+  const canEditEntry = !isArchivedEntry || isAdminRole(user?.role);
   const [form, setForm] = useState(() => ({
     trackCode: entry?.trackCode || '',
     date: entry?.date ? entry.date.slice(0, 10) : new Date().toISOString().slice(0, 10),
-    problemType: entry?.problemType || settings.problemTypes[0] || '',
+    problemType: entry?.problemType || settings.problemTypes[0]?.name || '',
     department: entry?.department || settings.departments[0] || '',
     requestSource: entry?.requestSource || settings.requestSources[0] || '',
     status: entry?.status || 'Jarayonda',
@@ -41,7 +44,10 @@ export default function ComplaintDetailPage() {
   }, [form.date, form.priority, form.status]);
   const trackConflicts = useMemo(() => findTrackConflicts([form.trackCode], { excludeId: id }), [form.trackCode, id]);
   const activeTrackConflicts = trackConflicts.filter((item) => item.activeCount > 0);
-  const problemTypeOptions = useMemo(() => settings.problemTypes.map((item) => ({ value: item, label: item })), [settings.problemTypes]);
+  const problemTypeOptions = useMemo(
+    () => settings.problemTypes.map((item) => ({ value: item.name, label: item.minutes ? `${item.name} • ${item.minutes} daqiqa` : item.name })),
+    [settings.problemTypes]
+  );
   const departmentOptions = useMemo(() => settings.departments.map((item) => ({ value: item, label: item })), [settings.departments]);
   const sourceOptions = useMemo(() => settings.requestSources.map((item) => ({ value: item, label: item })), [settings.requestSources]);
   const statusOptions = useMemo(() => STATUS_OPTIONS.map((item) => ({ value: item, label: valueLabel(item) })), [valueLabel]);
@@ -52,6 +58,11 @@ export default function ComplaintDetailPage() {
 
   const handleSubmit = (event) => {
     event.preventDefault();
+
+    if (!canEditEntry) {
+      toast.error("Arxivdagi trekni faqat admin o'zgartira oladi.");
+      return;
+    }
 
     if (!form.trackCode.trim()) {
       toast.error(`${t('track')} majburiy.`);
@@ -118,7 +129,7 @@ export default function ComplaintDetailPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-slate-950 dark:text-white">{t('editTrack')}</h1>
           <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-            {t('activeTracksSubtitle')}.
+            {canEditEntry ? `${t('activeTracksSubtitle')}.` : "Arxivdagi trek ma'lumoti faqat admin tomonidan tahrirlanadi."}
           </p>
         </div>
       </div>
@@ -127,11 +138,11 @@ export default function ComplaintDetailPage() {
         <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
           <div className="grid gap-4 md:grid-cols-2">
             <Field label={t('track')}>
-              <input value={form.trackCode} onChange={(event) => update('trackCode', event.target.value)} className={inputClass()} />
+              <input value={form.trackCode} onChange={(event) => update('trackCode', event.target.value)} disabled={!canEditEntry} className={inputClass(!canEditEntry)} />
             </Field>
 
             <Field label={t('date')}>
-              <input type="date" value={form.date} onChange={(event) => update('date', event.target.value)} className={inputClass()} />
+              <input type="date" value={form.date} onChange={(event) => update('date', event.target.value)} disabled={!canEditEntry} className={inputClass(!canEditEntry)} />
             </Field>
 
             <Field label={t('problem')}>
@@ -140,6 +151,7 @@ export default function ComplaintDetailPage() {
                 onChange={(value) => update('problemType', value)}
                 placeholder={t('selectProblemType')}
                 options={problemTypeOptions}
+                disabled={!canEditEntry}
               />
             </Field>
 
@@ -149,6 +161,7 @@ export default function ComplaintDetailPage() {
                 onChange={(value) => update('department', value)}
                 placeholder={t('selectDepartment')}
                 options={departmentOptions}
+                disabled={!canEditEntry}
               />
             </Field>
 
@@ -158,6 +171,7 @@ export default function ComplaintDetailPage() {
                 onChange={(value) => update('requestSource', value)}
                 placeholder={t('selectRequestSource')}
                 options={sourceOptions}
+                disabled={!canEditEntry}
               />
             </Field>
 
@@ -167,15 +181,16 @@ export default function ComplaintDetailPage() {
                 onChange={(value) => update('status', value)}
                 placeholder={t('selectStatus')}
                 options={statusOptions}
+                disabled={!canEditEntry}
               />
             </Field>
 
             <Field label={t('takenBy')}>
-              <input value={form.handledBy} onChange={(event) => update('handledBy', event.target.value)} className={inputClass()} />
+              <input value={form.handledBy} onChange={(event) => update('handledBy', event.target.value)} disabled={!canEditEntry} className={inputClass(!canEditEntry)} />
             </Field>
 
             <Field label={t('priority')}>
-              <input value={valueLabel(autoPriority)} readOnly className={`${inputClass()} cursor-not-allowed bg-slate-50 dark:bg-slate-800`} />
+              <input value={valueLabel(autoPriority)} readOnly className={`${inputClass(true)} cursor-not-allowed bg-slate-50 dark:bg-slate-800`} />
             </Field>
           </div>
 
@@ -191,7 +206,8 @@ export default function ComplaintDetailPage() {
               value={form.comment}
               onChange={(event) => update('comment', event.target.value)}
               rows={5}
-              className={`${inputClass()} resize-y`}
+              disabled={!canEditEntry}
+              className={`${inputClass(!canEditEntry)} resize-y`}
             />
           </Field>
         </section>
@@ -206,13 +222,15 @@ export default function ComplaintDetailPage() {
             </dl>
           </div>
 
-          <button
-            type="submit"
-            className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 dark:bg-white dark:text-slate-950 dark:hover:bg-slate-200"
-          >
-            <Save size={17} />
-            {t('save')}
-          </button>
+          {canEditEntry ? (
+            <button
+              type="submit"
+              className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 dark:bg-white dark:text-slate-950 dark:hover:bg-slate-200"
+            >
+              <Save size={17} />
+              {t('save')}
+            </button>
+          ) : null}
         </aside>
       </form>
     </div>
@@ -237,11 +255,16 @@ function SummaryRow({ label, value }) {
   );
 }
 
-function inputClass() {
-  return 'mt-0 w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none transition focus:border-slate-400 focus:ring-4 focus:ring-slate-200/70 dark:border-slate-700 dark:bg-slate-950 dark:text-white dark:focus:ring-slate-800';
+function inputClass(disabled = false) {
+  return clsx(
+    'mt-0 w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none transition dark:border-slate-700 dark:bg-slate-950 dark:text-white',
+    disabled
+      ? 'cursor-not-allowed bg-slate-50 text-slate-500 dark:bg-slate-900 dark:text-slate-400'
+      : 'focus:border-slate-400 focus:ring-4 focus:ring-slate-200/70 dark:focus:ring-slate-800'
+  );
 }
 
-function PremiumSelect({ value, onChange, options, placeholder }) {
+function PremiumSelect({ value, onChange, options, placeholder, disabled = false }) {
   const pickerId = useId();
   const [open, setOpen] = useState(false);
   const selectedOption = options.find((option) => option.value === value);
@@ -258,6 +281,7 @@ function PremiumSelect({ value, onChange, options, placeholder }) {
   }, [pickerId]);
 
   const toggleOpen = () => {
+    if (disabled) return;
     window.dispatchEvent(new CustomEvent('qc-close-popovers', { detail: { source: pickerId } }));
     setOpen((current) => !current);
   };
@@ -272,8 +296,12 @@ function PremiumSelect({ value, onChange, options, placeholder }) {
       <button
         type="button"
         onClick={toggleOpen}
+        disabled={disabled}
         className={clsx(
-          'flex w-full items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 text-left text-sm shadow-sm outline-none transition hover:border-slate-300 hover:shadow-md focus:border-slate-400 focus:ring-4 focus:ring-slate-200/70 dark:border-slate-700 dark:bg-slate-950 dark:hover:border-slate-600 dark:focus:ring-slate-800',
+          'flex w-full items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 text-left text-sm shadow-sm outline-none transition dark:border-slate-700 dark:bg-slate-950',
+          disabled
+            ? 'cursor-not-allowed bg-slate-50 text-slate-400 dark:bg-slate-900 dark:text-slate-500'
+            : 'hover:border-slate-300 hover:shadow-md focus:border-slate-400 focus:ring-4 focus:ring-slate-200/70 dark:hover:border-slate-600 dark:focus:ring-slate-800',
           open && 'border-slate-400 ring-4 ring-slate-200/70 dark:border-slate-500 dark:ring-slate-800',
           selectedOption ? 'text-slate-900 dark:text-white' : 'text-slate-400 dark:text-slate-500'
         )}

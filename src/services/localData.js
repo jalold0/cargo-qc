@@ -1,67 +1,134 @@
-import { normalizeEntries, normalizeOtkEntry, parseAppDate } from './entryNormalizer';
+﻿import { normalizeEntries, normalizeOtkEntry, parseAppDate } from './entryNormalizer';
+import * as supabase from './supabaseRest';
+import {
+  bulkUpsertUsersRemote,
+  fetchUsersRemote,
+  isUsersRemoteEnabled,
+} from './usersRemote';
 
-export const DEFAULT_PROBLEM_TYPES = [
-  'Status muammosi',
-  'Xitoy ombori',
-  'Toshkent ombori',
-  'Kilo / gabarit xatolari',
-  "Noto'g'ri ID / trek biriktirish",
-  'Tovar shikastlanishi',
-  'Yetkazish kechikishi',
-  'Filial yuklari yetib bormasligi',
-  "To'lov masalasi",
-  'Integratsiya',
-  'Adashgan yuk',
-  "Yo'qolgan yuk",
-  'Vozvrat muammolari',
-  "Mijoz boshqa manzilga ko'chgan",
-  'Qoplab berilgan',
-  'NO CLIENT',
-  "Botda ko'rinmagan",
-  'Sortirovka ID si chiqmagan',
-  'Emu bazasiga tushmagan yuklar',
-  "BTS filialida noma'lum bo'lib turgan",
-  'BTS filiallaridagi ostatkalar',
-  'Yopilgan filial',
-];
+// Pure helperlar dataHelpers.js moduliga ko'chirildi —
+// mavjud importlar ishlashda davom etishi uchun re-export qilamiz.
+export {
+  applyPriorityRules,
+  getPriorityByWaitingDays,
+  getWaitingDays,
+  parseTrackNumbers,
+  publicUser,
+  toDateKey,
+} from './dataHelpers';
+// Lokal foydalanish uchun (faqat ichkarida ishlatilganlar):
+import { applyPriorityRules, getWaitingDays, toDateKey } from './dataHelpers';
 
-export const DEFAULT_DEPARTMENTS = [
-  "IT bo'limi",
-  'Xitoy ombori',
-  'Toshkent ombori',
-  'Logistika',
-  'BTS',
-  'EMU',
-  'Kuryerka',
-  "Sotuv bo'limi",
-  "Moliya bo'limi",
-];
+// Predicate/normalizer helperlar dataPredicates.js'ga ko'chirildi
+export {
+  compareTrackEntryOrder,
+  isCompensatedProblemType,
+  isCompensatedRecoveredProblemType,
+  isIsfandiyorLabel,
+  isJaloldinMirzakbarovUser,
+  isLegacyAdminUser,
+  normalizeAssignmentPersonKey,
+  normalizePersonLabel,
+  normalizeTrackCode,
+  resolveEntryOrderTime,
+} from './dataPredicates';
+// Lokal foydalanish uchun:
+import {
+  DEPARTMENT_ASSIGNMENT_NAME_ALIASES,
+  compareTrackEntryOrder,
+  isCompensatedProblemType,
+  isCompensatedRecoveredProblemType,
+  isIsfandiyorLabel,
+  isJaloldinMirzakbarovUser,
+  isLegacyAdminUser,
+  normalizeAssignmentPersonKey,
+  normalizePersonLabel,
+  normalizeTrackCode,
+  resolveEntryOrderTime,
+} from './dataPredicates';
 
-export const DEFAULT_REQUEST_SOURCES = [
-  'Telegram',
-  'Call center',
-  'Xitoy',
-  'Toshkent ombori',
-  'RS lar',
-  'IPOST filiali',
-  'Mijozlar',
-  'EMU',
-  'BTS',
-];
+// Assistant AI normalizatorlari assistantAiNormalizer.js'ga ko'chirildi
+export {
+  isAssistantAiSeedRecord,
+  mergeAssistantAiRequests,
+  normalizeAssistantAiRequest,
+} from './assistantAiNormalizer';
+// Lokal foydalanish uchun:
+import {
+  isAssistantAiSeedRecord,
+  mergeAssistantAiRequests,
+  normalizeAssistantAiRequest,
+} from './assistantAiNormalizer';
 
-export const DEFAULT_ROLES = ['admin', 'operator', 'supervisor'];
+// Compensated registry normalizatorlari compensatedNormalizer.js'ga ko'chirildi
+export {
+  normalizeCompensatedPaymentStatus,
+  normalizeCompensatedRecoveryStatus,
+  normalizeCompensatedRegistry,
+  normalizeOptionalRegistryDate,
+  normalizePaymentAmount,
+} from './compensatedNormalizer';
+// Lokal foydalanish uchun:
+import {
+  normalizeCompensatedPaymentStatus,
+  normalizeCompensatedRecoveryStatus,
+  normalizeCompensatedRegistry,
+  normalizeOptionalRegistryDate,
+  normalizePaymentAmount,
+} from './compensatedNormalizer';
 
-export const STATUS_OPTIONS = ['Yopildi', 'Jarayonda', "Moliyaga yo'naltirildi"];
+// ============================================================
+// Konstantalar — dataConstants.js moduliga ko'chirildi.
+// Mavjud importlar ishlashda davom etishi uchun re-export qilamiz.
+// ============================================================
+export {
+  DEFAULT_PROBLEM_TYPES,
+  DEFAULT_DEPARTMENTS,
+  DEFAULT_REQUEST_SOURCES,
+  DEFAULT_ROLES,
+  DEFAULT_DEPARTMENT_ORDER_CONTENT,
+  STATUS_OPTIONS,
+  DEFAULT_USERS,
+} from './dataConstants';
+// Lokal foydalanish uchun:
+import {
+  DEFAULT_PROBLEM_TYPES,
+  DEFAULT_DEPARTMENTS,
+  DEFAULT_REQUEST_SOURCES,
+  DEFAULT_ROLES,
+  DEFAULT_DEPARTMENT_ORDER_CONTENT,
+  DEFAULT_USERS,
+} from './dataConstants';
 
-export const DEFAULT_USERS = [
-  { id: 1, username: 'admin', password: 'admin123', full_name: 'Admin', role: 'admin', active: true, avatarUrl: '' },
-  { id: 2, username: 'operator1', password: 'op123', full_name: 'Operator', role: 'operator', active: true, avatarUrl: '' },
-  { id: 3, username: 'supervisor1', password: 'sup123', full_name: 'Supervisor', role: 'supervisor', active: true, avatarUrl: '' },
-];
+const DEFAULT_ASSISTANT_AI_REQUESTS = [];
+
+function normalizeSystemUserRecord(user) {
+  const safeUser = user && typeof user === 'object' ? user : {};
+  const role = String(safeUser.role || '').trim().toLowerCase();
+  const needsWorkTime = role === 'admin' || role === 'menejer' || role === 'manager';
+  const workStart = typeof safeUser.workStart === 'string' ? safeUser.workStart : '';
+  const workEnd = typeof safeUser.workEnd === 'string' ? safeUser.workEnd : '';
+
+  if (needsWorkTime) {
+    return {
+      ...safeUser,
+      workStart: workStart || '09:00',
+      workEnd: workEnd || '18:00',
+    };
+  }
+
+  return {
+    ...safeUser,
+    workStart,
+    workEnd,
+  };
+}
 
 const SETTINGS_KEY = 'cargo-qc-otk-settings';
 const ENTRIES_KEY = 'cargo-qc-otk-entries';
 const ARCHIVE_KEY = 'cargo-qc-otk-archive';
+const COMPENSATED_REGISTRY_KEY = 'cargo-qc-compensated-registry';
+const ASSISTANT_AI_KEY = 'cargo-qc-assistant-ai-requests';
 const USERS_KEY = 'cargo-qc-users';
 const MIGRATIONS_KEY = 'cargo-qc-migrations';
 const AUDIT_KEY = 'cargo-qc-audit-log';
@@ -75,10 +142,51 @@ const computedCache = {
   users: { raw: null, value: null },
   entries: { raw: null, value: null },
   archive: { raw: null, value: null },
+  compensatedRegistry: { raw: null, value: null },
+  assistantAi: { raw: null, value: null },
   audit: { raw: null, value: null },
   allRecords: { entriesRaw: null, archiveRaw: null, value: null },
   dashboard: new Map(),
 };
+
+let complaintsRemoteHydrationStarted = false;
+let complaintsRemoteSyncTimer = null;
+let compensatedRemoteHydrationStarted = false;
+let compensatedRemoteSyncTimer = null;
+let settingsRemoteHydrationStarted = false;
+let settingsRemoteSyncTimer = null;
+let usersRemoteHydrationStarted = false;
+let usersRemoteSyncTimer = null;
+let assistantRemoteHydrationStarted = false;
+let assistantRemoteSyncTimer = null;
+let remoteRefreshPromise = null;
+let lastRemoteRefreshAt = 0;
+const REMOTE_SYNC_GRACE_MS = 15000;
+const remoteSyncPendingUntil = {
+  complaints: 0,
+  compensated: 0,
+  settings: 0,
+  assistant: 0,
+  users: 0,
+};
+
+function markRemoteSyncPending(scope, durationMs = REMOTE_SYNC_GRACE_MS) {
+  remoteSyncPendingUntil[scope] = Date.now() + durationMs;
+}
+
+// Helper: data change'ni boshqa modullarga e'lon qilish
+function dispatchDataChanged(key) {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new CustomEvent('cargo-qc-data-changed', { detail: { key } }));
+}
+
+function clearRemoteSyncPending(scope) {
+  remoteSyncPendingUntil[scope] = 0;
+}
+
+function isRemoteSyncPending(scope) {
+  return Date.now() < (remoteSyncPendingUntil[scope] || 0);
+}
 
 function clearComputedCaches(changedKey = '') {
   if (!changedKey || changedKey === SETTINGS_KEY) {
@@ -93,13 +201,19 @@ function clearComputedCaches(changedKey = '') {
   if (!changedKey || changedKey === ARCHIVE_KEY) {
     computedCache.archive = { raw: null, value: null };
   }
+  if (!changedKey || changedKey === COMPENSATED_REGISTRY_KEY) {
+    computedCache.compensatedRegistry = { raw: null, value: null };
+  }
+  if (!changedKey || changedKey === ASSISTANT_AI_KEY) {
+    computedCache.assistantAi = { raw: null, value: null };
+  }
   if (!changedKey || changedKey === AUDIT_KEY) {
     computedCache.audit = { raw: null, value: null };
   }
   if (!changedKey || [ENTRIES_KEY, ARCHIVE_KEY].includes(changedKey)) {
     computedCache.allRecords = { entriesRaw: null, archiveRaw: null, value: null };
   }
-  if (!changedKey || [SETTINGS_KEY, ENTRIES_KEY, ARCHIVE_KEY, AUDIT_KEY].includes(changedKey)) {
+  if (!changedKey || [SETTINGS_KEY, ENTRIES_KEY, ARCHIVE_KEY, COMPENSATED_REGISTRY_KEY, ASSISTANT_AI_KEY, AUDIT_KEY].includes(changedKey)) {
     computedCache.dashboard.clear();
   }
 }
@@ -122,15 +236,471 @@ const readJson = (key, fallback) => {
   }
 };
 
+// localStorage quota'sini boshqarish — ko'pchilik brauzerda ~5MB chegara bor
+let lastQuotaWarningAt = 0;
+
 const writeJson = (key, value) => {
   const raw = JSON.stringify(value);
-  localStorage.setItem(key, raw);
+  try {
+    localStorage.setItem(key, raw);
+  } catch (error) {
+    // QuotaExceededError yoki shu turdagi xato
+    const isQuotaError =
+      error?.name === 'QuotaExceededError' ||
+      error?.name === 'NS_ERROR_DOM_QUOTA_REACHED' ||
+      error?.code === 22 ||
+      error?.code === 1014;
+    if (isQuotaError) {
+      // Foydalanuvchiga ogohlantirish (1 daqiqaga bir martadan ko'p emas)
+      const now = Date.now();
+      if (now - lastQuotaWarningAt > 60_000) {
+        lastQuotaWarningAt = now;
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('cargo-qc-storage-full', { detail: { key, attemptedBytes: raw.length } }));
+        }
+        console.warn(`[storage] QuotaExceededError: localStorage to'lib qoldi. Kalit: ${key}, hajm: ${raw.length} bayt. Audit log yoki eski yozuvlarni tozalash kerak.`);
+      }
+      // Audit logni qisqartirib qayta urinish (eng kichik xavfsiz harakat)
+      try {
+        const auditRaw = localStorage.getItem(AUDIT_KEY);
+        if (auditRaw) {
+          const auditList = JSON.parse(auditRaw);
+          if (Array.isArray(auditList) && auditList.length > 100) {
+            const trimmed = auditList.slice(-100); // oxirgi 100 ta yozuv qoldiriladi
+            localStorage.setItem(AUDIT_KEY, JSON.stringify(trimmed));
+            // Yana urinib ko'rish
+            localStorage.setItem(key, raw);
+            console.warn('[storage] Audit log qisqartirildi va qayta saqlash muvaffaqiyatli');
+          }
+        }
+      } catch {
+        // Hech narsa qila olmaymiz — xato yutib yuboriladi
+      }
+    } else {
+      console.error('[storage] writeJson xato:', error);
+    }
+  }
   rawStorageCache.set(key, { raw, value });
   clearComputedCaches(key);
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('cargo-qc-data-changed', { detail: { key } }));
   }
 };
+
+function replaceComplaintSnapshotsLocal(activeEntries, archiveEntries) {
+  writeJson(ENTRIES_KEY, encodeEntryCollection(normalizeEntries(activeEntries)));
+  writeJson(ARCHIVE_KEY, encodeEntryCollection(normalizeEntries(archiveEntries)));
+}
+
+function resolveComplaintEntryFreshness(entry) {
+  return [
+    entry?.updatedAt,
+    entry?.archivedAt,
+    entry?.closedAt,
+    entry?.importedAt,
+    entry?.date,
+  ]
+    .map((value) => parseAppDate(value))
+    .map((value) => value?.getTime())
+    .find((value) => Number.isFinite(value))
+    ?? 0;
+}
+
+function mergeComplaintSnapshots(localActive = [], localArchive = [], remoteActive = [], remoteArchive = []) {
+  const merged = new Map();
+
+  const push = (entry, archived) => {
+    if (!entry?.id) return;
+    const normalized = normalizeOtkEntry({
+      ...entry,
+      isArchived: archived,
+    });
+    const nextFreshness = resolveComplaintEntryFreshness(normalized);
+    const current = merged.get(normalized.id);
+
+    if (!current || nextFreshness >= current.freshness) {
+      merged.set(normalized.id, {
+        entry: normalized,
+        freshness: nextFreshness,
+      });
+    }
+  };
+
+  localActive.forEach((entry) => push(entry, false));
+  localArchive.forEach((entry) => push(entry, true));
+  remoteActive.forEach((entry) => push(entry, false));
+  remoteArchive.forEach((entry) => push(entry, true));
+
+  const active = [];
+  const archive = [];
+
+  Array.from(merged.values())
+    .map((item) => item.entry)
+    .forEach((entry) => {
+      if (entry.isArchived) {
+        archive.push(entry);
+      } else {
+        active.push(entry);
+      }
+    });
+
+  return {
+    active: applyPriorityRules(normalizeEntries(active)),
+    archive: normalizeEntries(archive),
+  };
+}
+
+function scheduleComplaintsRemoteSync() {
+  if (typeof window === 'undefined') return;
+  markRemoteSyncPending('complaints');
+
+  if (complaintsRemoteSyncTimer) {
+    window.clearTimeout(complaintsRemoteSyncTimer);
+  }
+
+  complaintsRemoteSyncTimer = window.setTimeout(async () => {
+    complaintsRemoteSyncTimer = null;
+
+    try {
+      if (!supabase.isSupabaseEnabled) return;
+
+      const active = normalizeEntries(decodeEntryCollection(readJson(ENTRIES_KEY, [])));
+      const archive = normalizeEntries(decodeEntryCollection(readJson(ARCHIVE_KEY, [])));
+      await supabase.upsertComplaintsSnapshotRemote(active, archive);
+      clearRemoteSyncPending('complaints');
+    } catch {
+      // local fallback stays active
+      markRemoteSyncPending('complaints');
+    }
+  }, 180);
+}
+
+function hydrateComplaintsFromRemoteInBackground() {
+  if (typeof window === 'undefined' || complaintsRemoteHydrationStarted) return;
+  complaintsRemoteHydrationStarted = true;
+
+  window.setTimeout(async () => {
+    try {
+      if (!supabase.isSupabaseEnabled) return;
+      if (isRemoteSyncPending('complaints')) return;
+
+      const probe = await supabase.testComplaintsSupabaseConnection();
+      if (!probe.ok) return;
+
+      const remote = await supabase.fetchComplaintsRemote();
+      const localActive = normalizeEntries(decodeEntryCollection(readJson(ENTRIES_KEY, [])));
+      const localArchive = normalizeEntries(decodeEntryCollection(readJson(ARCHIVE_KEY, [])));
+      const merged = mergeComplaintSnapshots(localActive, localArchive, remote.active || [], remote.archive || []);
+
+      if (
+        JSON.stringify(localActive) !== JSON.stringify(merged.active) ||
+        JSON.stringify(localArchive) !== JSON.stringify(merged.archive)
+      ) {
+        replaceComplaintSnapshotsLocal(merged.active, merged.archive);
+      }
+
+      if (
+        JSON.stringify(remote.active || []) !== JSON.stringify(merged.active) ||
+        JSON.stringify(remote.archive || []) !== JSON.stringify(merged.archive)
+      ) {
+        await supabase.upsertComplaintsSnapshotRemote(merged.active, merged.archive);
+      }
+    } catch {
+      // keep local mode if remote is unavailable
+    }
+  }, 0);
+}
+
+function replaceCompensatedRegistryLocal(items) {
+  writeJson(COMPENSATED_REGISTRY_KEY, normalizeCompensatedRegistry(items));
+}
+
+function resolveCompensatedItemFreshness(item) {
+  return [
+    item?.updatedAt,
+    item?.importedAt,
+    item?.compensatedDate,
+  ]
+    .map((value) => parseAppDate(value))
+    .map((value) => value?.getTime())
+    .find((value) => Number.isFinite(value))
+    ?? 0;
+}
+
+function mergeCompensatedRegistry(localItems = [], remoteItems = []) {
+  const merged = new Map();
+
+  const push = (item) => {
+    const normalized = normalizeCompensatedRegistry([item])[0];
+    if (!normalized) return;
+
+    const key = normalized.id || normalizeTrackCode(normalized.trackCode);
+    const freshness = resolveCompensatedItemFreshness(normalized);
+    const current = merged.get(key);
+
+    if (!current || freshness >= current.freshness) {
+      merged.set(key, { item: normalized, freshness });
+    }
+  };
+
+  localItems.forEach(push);
+  remoteItems.forEach(push);
+
+  return Array.from(merged.values())
+    .map((entry) => entry.item)
+    .sort((left, right) => left.trackCode.localeCompare(right.trackCode));
+}
+
+function scheduleCompensatedRemoteSync() {
+  if (typeof window === 'undefined') return;
+  markRemoteSyncPending('compensated');
+
+  if (compensatedRemoteSyncTimer) {
+    window.clearTimeout(compensatedRemoteSyncTimer);
+  }
+
+  compensatedRemoteSyncTimer = window.setTimeout(async () => {
+    compensatedRemoteSyncTimer = null;
+
+    try {
+      if (!supabase.isSupabaseEnabled) return;
+
+      const registry = normalizeCompensatedRegistry(readJson(COMPENSATED_REGISTRY_KEY, []));
+      await supabase.upsertCompensatedRegistryRemote(registry);
+      clearRemoteSyncPending('compensated');
+    } catch {
+      // local fallback stays active
+      markRemoteSyncPending('compensated');
+    }
+  }, 180);
+}
+
+function hydrateCompensatedFromRemoteInBackground() {
+  if (typeof window === 'undefined' || compensatedRemoteHydrationStarted) return;
+  compensatedRemoteHydrationStarted = true;
+
+  window.setTimeout(async () => {
+    try {
+      if (!supabase.isSupabaseEnabled) return;
+      if (isRemoteSyncPending('compensated')) return;
+
+      const probe = await supabase.testCompensatedSupabaseConnection();
+      if (!probe.ok) return;
+
+      const remote = await supabase.fetchCompensatedRegistryRemote();
+      const local = normalizeCompensatedRegistry(readJson(COMPENSATED_REGISTRY_KEY, []));
+      const merged = mergeCompensatedRegistry(local, remote || []);
+
+      if (JSON.stringify(local) !== JSON.stringify(merged)) {
+        replaceCompensatedRegistryLocal(merged);
+      }
+
+      if (JSON.stringify(remote || []) !== JSON.stringify(merged) && merged.length) {
+        await supabase.upsertCompensatedRegistryRemote(merged);
+      }
+    } catch {
+      // keep local mode if remote is unavailable
+    }
+  }, 0);
+}
+
+function replaceOtkSettingsLocal(settings) {
+  writeJson(SETTINGS_KEY, settings);
+}
+
+function mergeSettings(localSettings = {}, remoteSettings = {}) {
+  const local = localSettings && typeof localSettings === 'object' ? localSettings : {};
+  const remote = remoteSettings && typeof remoteSettings === 'object' ? remoteSettings : {};
+
+  return {
+    problemTypes: normalizeProblemTypes(
+      (local.problemTypes?.length ? local.problemTypes : []).concat(remote.problemTypes?.length ? remote.problemTypes : [])
+    ),
+    departments: Array.from(new Set([...(local.departments || []), ...(remote.departments || [])].filter(Boolean))),
+    requestSources: Array.from(new Set([...(local.requestSources || []), ...(remote.requestSources || [])].filter(Boolean))),
+    roles: Array.from(new Set([...(local.roles || []), ...(remote.roles || [])].filter(Boolean))),
+    departmentOrderContent: normalizeDepartmentOrderContent({
+      ...(remote.departmentOrderContent || {}),
+      ...(local.departmentOrderContent || {}),
+    }),
+  };
+}
+
+function scheduleSettingsRemoteSync(nextSettings) {
+  if (typeof window === 'undefined') return;
+  markRemoteSyncPending('settings');
+
+  if (settingsRemoteSyncTimer) {
+    window.clearTimeout(settingsRemoteSyncTimer);
+  }
+
+  settingsRemoteSyncTimer = window.setTimeout(async () => {
+    settingsRemoteSyncTimer = null;
+
+    try {
+      if (!supabase.isSupabaseEnabled) return;
+      await supabase.upsertOtkSettingsRemote(nextSettings);
+      clearRemoteSyncPending('settings');
+    } catch {
+      // local fallback stays active
+      markRemoteSyncPending('settings');
+    }
+  }, 180);
+}
+
+function hydrateSettingsFromRemoteInBackground() {
+  if (typeof window === 'undefined' || settingsRemoteHydrationStarted) return;
+  settingsRemoteHydrationStarted = true;
+
+  window.setTimeout(async () => {
+    try {
+      if (!supabase.isSupabaseEnabled) return;
+      if (isRemoteSyncPending('settings')) return;
+
+      const probe = await supabase.testSettingsSupabaseConnection();
+      if (!probe.ok) return;
+
+      const remote = await supabase.fetchOtkSettingsRemote();
+      const local = readJson(SETTINGS_KEY, {});
+      const merged = mergeSettings(local, remote || {});
+
+      if (JSON.stringify(getOtkSettings()) !== JSON.stringify(merged)) {
+        replaceOtkSettingsLocal(merged);
+      }
+
+      if (JSON.stringify(remote || {}) !== JSON.stringify(merged) && Object.keys(merged).length) {
+        await supabase.upsertOtkSettingsRemote(merged);
+      }
+    } catch {
+      // keep local mode if remote is unavailable
+    }
+  }, 0);
+}
+
+// ============================================================
+// USERS — Supabase sync (Bosqich 3)
+// ============================================================
+function scheduleUsersRemoteSync(usersList) {
+  if (typeof window === 'undefined') return;
+  markRemoteSyncPending('users');
+
+  if (usersRemoteSyncTimer) {
+    window.clearTimeout(usersRemoteSyncTimer);
+  }
+
+  usersRemoteSyncTimer = window.setTimeout(async () => {
+    usersRemoteSyncTimer = null;
+    try {
+      if (!isUsersRemoteEnabled) return;
+      await bulkUpsertUsersRemote(usersList);
+      clearRemoteSyncPending('users');
+    } catch {
+      // local fallback active
+      markRemoteSyncPending('users');
+    }
+  }, 200);
+}
+
+function hydrateUsersFromRemoteInBackground() {
+  if (typeof window === 'undefined' || usersRemoteHydrationStarted) return;
+  usersRemoteHydrationStarted = true;
+
+  window.setTimeout(async () => {
+    try {
+      if (!isUsersRemoteEnabled) return;
+      if (isRemoteSyncPending('users')) return;
+
+      const remote = await fetchUsersRemote();
+      if (!Array.isArray(remote) || remote.length === 0) return;
+
+      // Merge: remote yangiroq bo'lsa (updated_at), uni saqlaymiz; local-only userlar qoladi
+      const local = readJson(USERS_KEY, []);
+      const byUsername = new Map();
+      local.forEach((u) => {
+        const k = String(u?.username || '').trim().toLowerCase();
+        if (k) byUsername.set(k, u);
+      });
+      remote.forEach((r) => {
+        const k = String(r?.username || '').trim().toLowerCase();
+        if (!k) return;
+        const existing = byUsername.get(k);
+        if (!existing) {
+          byUsername.set(k, r);
+          return;
+        }
+        // Eng yangi versiyani saqlash
+        const remoteTime = new Date(r.updatedAt || r.createdAt || 0).getTime();
+        const localTime = new Date(existing.updatedAt || existing.createdAt || 0).getTime();
+        if (remoteTime >= localTime) byUsername.set(k, r);
+      });
+
+      const merged = Array.from(byUsername.values()).map(normalizeSystemUserRecord);
+      const localStr = JSON.stringify(local);
+      const mergedStr = JSON.stringify(merged);
+      if (localStr !== mergedStr) {
+        writeJson(USERS_KEY, merged);
+        computedCache.users = { raw: null, value: null }; // cache invalidation
+        dispatchDataChanged('users');
+      }
+    } catch {
+      // silent fallback
+    }
+  }, 0);
+}
+
+// ============================================================
+// ASSISTANT AI — Supabase sync (Bosqich 3)
+// ============================================================
+function scheduleAssistantRemoteSync(items) {
+  if (typeof window === 'undefined') return;
+  markRemoteSyncPending('assistant');
+
+  if (assistantRemoteSyncTimer) {
+    window.clearTimeout(assistantRemoteSyncTimer);
+  }
+
+  assistantRemoteSyncTimer = window.setTimeout(async () => {
+    assistantRemoteSyncTimer = null;
+    try {
+      if (!supabase.isSupabaseEnabled) return;
+      await supabase.seedAssistantAiRequestsRemote(items);
+      clearRemoteSyncPending('assistant');
+    } catch {
+      markRemoteSyncPending('assistant');
+    }
+  }, 200);
+}
+
+function hydrateAssistantFromRemoteInBackground() {
+  if (typeof window === 'undefined' || assistantRemoteHydrationStarted) return;
+  assistantRemoteHydrationStarted = true;
+
+  window.setTimeout(async () => {
+    try {
+      if (!supabase.isSupabaseEnabled) return;
+      if (isRemoteSyncPending('assistant')) return;
+
+      const probe = await supabase.testSupabaseConnection();
+      if (!probe.ok) return;
+
+      const remote = await supabase.fetchAssistantAiRequestsRemote();
+      if (!Array.isArray(remote)) return;
+
+      const local = readJson(ASSISTANT_AI_KEY, []);
+      const merged = mergeAssistantAiRequests(local, remote);
+      const localStr = JSON.stringify(local);
+      const mergedStr = JSON.stringify(merged);
+
+      if (localStr !== mergedStr) {
+        writeJson(ASSISTANT_AI_KEY, merged);
+        computedCache.assistantAi = { raw: null, value: null };
+        dispatchDataChanged('assistant_ai');
+      }
+    } catch {
+      // silent fallback
+    }
+  }, 0);
+}
 
 function getStorageRaw(key) {
   try {
@@ -140,7 +710,37 @@ function getStorageRaw(key) {
   }
 }
 
+function normalizeProblemTypeItem(item) {
+  const defaultMinutesByName = new Map(
+    DEFAULT_PROBLEM_TYPES.map((entry) => [String(entry.name || '').trim().toLowerCase(), Math.max(0, Number(entry.minutes) || 0)])
+  );
+
+  if (typeof item === 'string') {
+    const name = String(item || '').trim();
+    return { name, minutes: defaultMinutesByName.get(name.toLowerCase()) || 0 };
+  }
+
+  if (item && typeof item === 'object') {
+    const name = String(item.name || item.title || '').trim();
+    const savedMinutes = Math.max(0, Number(item.minutes) || 0);
+    return {
+      name,
+      minutes: savedMinutes || defaultMinutesByName.get(name.toLowerCase()) || 0,
+    };
+  }
+
+  return { name: '', minutes: 0 };
+}
+
+function normalizeProblemTypes(items = []) {
+  return items
+    .map(normalizeProblemTypeItem)
+    .filter((item) => item.name)
+    .filter((item, index, source) => source.findIndex((candidate) => candidate.name.toLowerCase() === item.name.toLowerCase()) === index);
+}
+
 export function getOtkSettings() {
+  hydrateSettingsFromRemoteInBackground();
   const raw = getStorageRaw(SETTINGS_KEY);
   if (computedCache.settings.raw === raw && computedCache.settings.value) {
     return computedCache.settings.value;
@@ -148,10 +748,24 @@ export function getOtkSettings() {
 
   const saved = readJson(SETTINGS_KEY, {});
   const value = {
-    problemTypes: saved.problemTypes?.length ? saved.problemTypes : DEFAULT_PROBLEM_TYPES,
+    problemTypes: normalizeProblemTypes(saved.problemTypes?.length ? saved.problemTypes : DEFAULT_PROBLEM_TYPES),
     departments: saved.departments?.length ? saved.departments : DEFAULT_DEPARTMENTS,
     requestSources: saved.requestSources?.length ? saved.requestSources : DEFAULT_REQUEST_SOURCES,
     roles: saved.roles?.length ? saved.roles : DEFAULT_ROLES,
+    departmentOrderContent: normalizeDepartmentOrderContent(saved.departmentOrderContent),
+    // Inaktiv hodimlar (yangi murojaatlar tushmaydi, yuklari taqsimlanadi)
+    inactiveEmployeeNames: Array.isArray(saved.inactiveEmployeeNames) && saved.inactiveEmployeeNames.length
+      ? saved.inactiveEmployeeNames
+      : ['isfandiyor', 'abduvali'],
+    // Aktiv asosiy hodimlar (yuklar bularning orasida teng taqsimlanadi)
+    activeTargetEmployees: Array.isArray(saved.activeTargetEmployees) && saved.activeTargetEmployees.length
+      ? saved.activeTargetEmployees
+      : [
+          { key: 'jaloldin', fallbackName: 'Jaloldin Mirzakbarov', fallbackRole: 'admin' },
+          { key: 'saidali', fallbackName: 'Saidali', fallbackRole: 'manager' },
+          { key: 'jasur', fallbackName: 'Jasur', fallbackRole: 'manager' },
+          { key: 'shahnoza', fallbackName: 'Shahnoza', fallbackRole: 'manager' },
+        ],
   };
 
   computedCache.settings = { raw, value };
@@ -159,23 +773,529 @@ export function getOtkSettings() {
 }
 
 export function saveOtkSettings(settings) {
-  writeJson(SETTINGS_KEY, settings);
+  const normalized = {
+    ...settings,
+    problemTypes: normalizeProblemTypes(settings.problemTypes),
+    departmentOrderContent: normalizeDepartmentOrderContent(settings.departmentOrderContent),
+  };
+  writeJson(SETTINGS_KEY, normalized);
+  scheduleSettingsRemoteSync(normalized);
 }
 
 export function getSystemUsers() {
+  hydrateUsersFromRemoteInBackground();
   const raw = getStorageRaw(USERS_KEY);
   if (computedCache.users.raw === raw && computedCache.users.value) {
     return computedCache.users.value;
   }
 
   const saved = readJson(USERS_KEY, []);
-  const value = saved.length ? saved : DEFAULT_USERS;
+  const value = (saved.length ? saved : DEFAULT_USERS).map(normalizeSystemUserRecord);
   computedCache.users = { raw, value };
   return value;
 }
 
 export function saveSystemUsers(users) {
-  writeJson(USERS_KEY, users);
+  const normalized = (users || []).map(normalizeSystemUserRecord);
+  writeJson(USERS_KEY, normalized);
+  scheduleUsersRemoteSync(normalized);
+}
+
+// Assistant AI normalizatorlari assistantAiNormalizer.js'ga ko'chirildi:
+// normalizeAssistantAiRequest, isAssistantAiSeedRecord,
+// resolveAssistantAiFreshness, mergeAssistantAiRequests
+
+export function getAssistantAiRequests() {
+  hydrateAssistantFromRemoteInBackground();
+  const raw = getStorageRaw(ASSISTANT_AI_KEY);
+  if (computedCache.assistantAi.raw === raw && computedCache.assistantAi.value) {
+    return computedCache.assistantAi.value;
+  }
+
+  const saved = readJson(ASSISTANT_AI_KEY, []);
+  const source = saved.length ? saved : DEFAULT_ASSISTANT_AI_REQUESTS;
+  const value = source
+    .map(normalizeAssistantAiRequest)
+    .filter((item) => !isAssistantAiSeedRecord(item))
+    .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime());
+
+  computedCache.assistantAi = { raw, value };
+  if (!saved.length) {
+    writeJson(ASSISTANT_AI_KEY, value);
+  }
+  return value;
+}
+
+export function saveAssistantAiRequests(items) {
+  const normalized = (items || [])
+    .map(normalizeAssistantAiRequest)
+    .filter((item) => !isAssistantAiSeedRecord(item));
+  writeJson(ASSISTANT_AI_KEY, normalized);
+  scheduleAssistantRemoteSync(normalized);
+}
+
+export function replaceAssistantAiRequests(items) {
+  saveAssistantAiRequests(items);
+  return getAssistantAiRequests();
+}
+
+export function createAssistantAiRequest(payload, options = {}) {
+  const nextItem = normalizeAssistantAiRequest(payload);
+  saveAssistantAiRequests([nextItem, ...getAssistantAiRequests()]);
+
+  const auditLog = createAuditLog('assistant_ai_create', null, resolveActorMeta(options.actor), {
+    trackCode: nextItem.trackCode,
+    message: `Assistent AI murojaati qo'shildi: ${nextItem.trackCode || nextItem.phone || nextItem.fullName}`,
+    details: nextItem,
+  });
+  writeJson(AUDIT_KEY, [auditLog, ...getOtkAuditLogs()].slice(0, MAX_AUDIT_LOGS));
+  return nextItem;
+}
+
+export function updateAssistantAiRequest(id, patch, options = {}) {
+  const current = getAssistantAiRequests();
+  const existing = current.find((item) => item.id === id);
+  if (!existing) return null;
+
+  const updated = normalizeAssistantAiRequest({
+    ...existing,
+    ...patch,
+    id: existing.id,
+    updatedAt: new Date().toISOString(),
+  });
+
+  saveAssistantAiRequests(current.map((item) => (item.id === id ? updated : item)));
+
+  const auditLog = createAuditLog('assistant_ai_update', null, resolveActorMeta(options.actor), {
+    trackCode: updated.trackCode,
+    message: `Assistent AI murojaati yangilandi: ${updated.trackCode || updated.phone || updated.fullName}`,
+    details: { before: existing, after: updated },
+  });
+  writeJson(AUDIT_KEY, [auditLog, ...getOtkAuditLogs()].slice(0, MAX_AUDIT_LOGS));
+  return updated;
+}
+
+export function assignAssistantAiRequest(id, actor) {
+  const actorName = actor?.full_name || actor?.actorName || actor?.username || '';
+  return updateAssistantAiRequest(
+    id,
+    {
+      handledBy: actorName,
+      status: "Qabul qildi",
+    },
+    { actor }
+  );
+}
+
+async function refreshRemoteBackedData(force = false) {
+  if (typeof window === 'undefined') return;
+  if (remoteRefreshPromise) return remoteRefreshPromise;
+
+  const now = Date.now();
+  if (!force && now - lastRemoteRefreshAt < 12000) return;
+
+  remoteRefreshPromise = (async () => {
+    try {
+      if (!supabase.isSupabaseEnabled) return;
+
+      const [
+        settingsProbe,
+        complaintsProbe,
+        compensatedProbe,
+        assistantProbe,
+      ] = await Promise.all([
+        supabase.testSettingsSupabaseConnection?.(),
+        supabase.testComplaintsSupabaseConnection?.(),
+        supabase.testCompensatedSupabaseConnection?.(),
+        supabase.testSupabaseConnection?.(),
+      ]);
+
+      if (settingsProbe?.ok) {
+        if (isRemoteSyncPending('settings')) {
+          // skip stale remote settings while local changes are settling
+        } else {
+        const remoteSettings = await supabase.fetchOtkSettingsRemote();
+        const mergedSettings = mergeSettings(getOtkSettings(), remoteSettings || {});
+        if (JSON.stringify(getOtkSettings()) !== JSON.stringify(mergedSettings)) {
+          replaceOtkSettingsLocal(mergedSettings);
+        }
+        if (JSON.stringify(remoteSettings || {}) !== JSON.stringify(mergedSettings) && Object.keys(mergedSettings).length) {
+          await supabase.upsertOtkSettingsRemote(mergedSettings);
+        }
+        }
+      }
+
+      if (complaintsProbe?.ok) {
+        if (isRemoteSyncPending('complaints')) {
+          // skip stale remote complaints while local changes are settling
+        } else {
+        const remoteComplaints = await supabase.fetchComplaintsRemote();
+        const localActive = getOtkEntries();
+        const localArchive = getOtkArchive();
+        const merged = mergeComplaintSnapshots(localActive, localArchive, remoteComplaints.active || [], remoteComplaints.archive || []);
+        if (
+          JSON.stringify(localActive) !== JSON.stringify(merged.active) ||
+          JSON.stringify(localArchive) !== JSON.stringify(merged.archive)
+        ) {
+          replaceComplaintSnapshotsLocal(merged.active, merged.archive);
+        }
+        if (
+          JSON.stringify(remoteComplaints.active || []) !== JSON.stringify(merged.active) ||
+          JSON.stringify(remoteComplaints.archive || []) !== JSON.stringify(merged.archive)
+        ) {
+          await supabase.upsertComplaintsSnapshotRemote(merged.active, merged.archive);
+        }
+        }
+      }
+
+      if (compensatedProbe?.ok) {
+        if (isRemoteSyncPending('compensated')) {
+          // skip stale remote compensated data while local changes are settling
+        } else {
+        const remoteCompensated = normalizeCompensatedRegistry(await supabase.fetchCompensatedRegistryRemote());
+        const localCompensated = getCompensatedLoadRegistry();
+        const mergedCompensated = mergeCompensatedRegistry(localCompensated, remoteCompensated);
+        if (JSON.stringify(localCompensated) !== JSON.stringify(mergedCompensated)) {
+          replaceCompensatedRegistryLocal(mergedCompensated);
+        }
+        if (JSON.stringify(remoteCompensated) !== JSON.stringify(mergedCompensated) && mergedCompensated.length) {
+          await supabase.upsertCompensatedRegistryRemote(mergedCompensated);
+        }
+        }
+      }
+
+      if (assistantProbe?.ok) {
+        if (isRemoteSyncPending('assistant')) {
+          // skip stale remote assistant data while local changes are settling
+        } else {
+        const remoteAssistant = (await supabase.fetchAssistantAiRequestsRemote()).map(normalizeAssistantAiRequest);
+        const localAssistant = getAssistantAiRequests();
+        const mergedAssistant = mergeAssistantAiRequests(localAssistant, remoteAssistant);
+        if (JSON.stringify(localAssistant) !== JSON.stringify(mergedAssistant)) {
+          replaceAssistantAiRequests(mergedAssistant);
+        }
+        if (JSON.stringify(remoteAssistant) !== JSON.stringify(mergedAssistant) && mergedAssistant.length) {
+          await supabase.seedAssistantAiRequestsRemote(mergedAssistant);
+        }
+        }
+      }
+
+      lastRemoteRefreshAt = Date.now();
+    } catch {
+      // stay in local mode silently
+    } finally {
+      remoteRefreshPromise = null;
+    }
+  })();
+
+  return remoteRefreshPromise;
+}
+
+function normalizeDepartmentOrderContent(value) {
+  const fallback = DEFAULT_DEPARTMENT_ORDER_CONTENT;
+  const source = value && typeof value === 'object' ? value : {};
+  const assignmentSeed =
+    source.actualAssignments?.length > fallback.actualAssignments.length
+      ? source.actualAssignments
+      : fallback.actualAssignments;
+
+  const actualAssignments = assignmentSeed.map((item, index) => ({
+    task: String(source.actualAssignments?.[index]?.task || item.task || ''),
+    responsible: String(source.actualAssignments?.[index]?.responsible || item.responsible || ''),
+    assistants: Array.from({ length: 4 }, (_, assistantIndex) =>
+      String(source.actualAssignments?.[index]?.assistants?.[assistantIndex] || item.assistants?.[assistantIndex] || '')
+    ),
+  }));
+
+  return {
+    subtitle: String(source.subtitle || fallback.subtitle),
+    leaderResponsibilities: fallback.leaderResponsibilities.map((item, index) => ({
+      title: String(source.leaderResponsibilities?.[index]?.title || item.title),
+      description: String(source.leaderResponsibilities?.[index]?.description || item.description),
+    })),
+    core: fallback.core.map((item, index) => ({
+      title: String(source.core?.[index]?.title || item.title),
+      description: String(source.core?.[index]?.description || item.description),
+    })),
+    actual: fallback.actual.map((item, index) => ({
+      title: String(source.actual?.[index]?.title || item.title),
+      description: String(source.actual?.[index]?.description || item.description),
+    })),
+    actualAssignments: syncDepartmentAssignmentPeople(actualAssignments),
+    workflow: fallback.workflow.map((item, index) => String(source.workflow?.[index] || item)),
+    indicators: fallback.indicators.map((item, index) => String(source.indicators?.[index] || item)),
+  };
+}
+
+function syncDepartmentAssignmentPeople(assignments = []) {
+  const users = getSystemUsers().filter((item) => item.active !== false);
+  if (!users.length) return assignments;
+
+  return assignments.map((item) => ({
+    ...item,
+    responsible: resolveAssignmentPersonLabel(item.responsible, users),
+    assistants: Array.from({ length: 4 }, (_, index) =>
+      resolveAssignmentPersonLabel(item.assistants?.[index], users)
+    ),
+  }));
+}
+
+function resolveAssignmentPersonLabel(value, users = []) {
+  const original = String(value || '').trim();
+  if (!original) return '';
+  const normalized = normalizeAssignmentPersonKey(original);
+  if (!normalized) return original;
+
+  const direct = users.find((item) => {
+    const fullName = normalizeAssignmentPersonKey(item.full_name || '');
+    const username = normalizeAssignmentPersonKey(item.username || '');
+    return normalized === fullName || normalized === username;
+  });
+  if (direct) return direct.full_name || direct.username || original;
+
+  const tokens = normalized.split(' ').filter(Boolean);
+  const tokenMatch = users.find((item) => {
+    const userTokens = normalizeAssignmentPersonKey(item.full_name || item.username || '').split(' ').filter(Boolean);
+    return tokens.some((token) =>
+      userTokens.some((userToken) => token.length >= 5 && userToken.length >= 5 && token.slice(0, 5) === userToken.slice(0, 5))
+    );
+  });
+
+  if (tokenMatch) {
+    return tokenMatch.full_name || tokenMatch.username || original;
+  }
+
+  const aliasMatch = DEPARTMENT_ASSIGNMENT_NAME_ALIASES[normalized];
+  return aliasMatch || original;
+}
+
+// Predicate va normalizer helperlar dataPredicates.js'ga ko'chirildi.
+
+export function migrateAdminToJaloldinAccount() {
+  const users = getSystemUsers();
+  if (!users.length) return { updated: 0, removed: 0 };
+
+  const legacyAdmins = users.filter(isLegacyAdminUser);
+  const jaloldinAccount = users.find(isJaloldinMirzakbarovUser);
+
+  if (!legacyAdmins.length && (!jaloldinAccount || jaloldinAccount.role === 'admin')) {
+    return { updated: 0, removed: 0 };
+  }
+
+  let updated = 0;
+  let removed = 0;
+  let nextUsers = [...users];
+
+  if (jaloldinAccount) {
+    nextUsers = nextUsers.map((item) => {
+      if (item.id !== jaloldinAccount.id) return item;
+
+      const hadCustomPermissions = Object.prototype.hasOwnProperty.call(item, 'permissions');
+      const { permissions, customPermissionsEnabled, ...rest } = item;
+      const shouldUpdate =
+        item.role !== 'admin' ||
+        item.active === false ||
+        hadCustomPermissions ||
+        customPermissionsEnabled;
+
+      if (shouldUpdate) updated += 1;
+
+      return {
+        ...rest,
+        role: 'admin',
+        active: true,
+      };
+    });
+
+    const beforeLength = nextUsers.length;
+    nextUsers = nextUsers.filter((item) => item.id === jaloldinAccount.id || !isLegacyAdminUser(item));
+    removed = beforeLength - nextUsers.length;
+  } else if (legacyAdmins.length) {
+    const sourceAdmin = legacyAdmins[0];
+
+    nextUsers = nextUsers.map((item) => {
+      if (item.id !== sourceAdmin.id) return item;
+
+      const { permissions, customPermissionsEnabled, ...rest } = item;
+      updated += 1;
+
+      return {
+        ...rest,
+        username: 'jaloldin.mirzakbarov',
+        full_name: 'Jaloldin Mirzakbarov',
+        role: 'admin',
+        active: true,
+      };
+    });
+
+    const beforeLength = nextUsers.length;
+    nextUsers = nextUsers.filter((item) => item.id === sourceAdmin.id || !isLegacyAdminUser(item));
+    removed = beforeLength - nextUsers.length;
+  }
+
+  if (!updated && !removed) {
+    return { updated: 0, removed: 0 };
+  }
+
+  saveSystemUsers(nextUsers);
+  return { updated, removed };
+}
+
+export function getCompensatedLoadRegistry() {
+  hydrateCompensatedFromRemoteInBackground();
+  const raw = getStorageRaw(COMPENSATED_REGISTRY_KEY);
+  if (computedCache.compensatedRegistry.raw === raw && computedCache.compensatedRegistry.value) {
+    return computedCache.compensatedRegistry.value;
+  }
+
+  const saved = readJson(COMPENSATED_REGISTRY_KEY, []);
+  const value = normalizeCompensatedRegistry(saved);
+  computedCache.compensatedRegistry = { raw, value };
+  return value;
+}
+
+export function saveCompensatedLoadRegistry(items) {
+  writeJson(COMPENSATED_REGISTRY_KEY, normalizeCompensatedRegistry(items));
+  scheduleCompensatedRemoteSync();
+}
+
+export function importCompensatedLoadRegistry(items = [], options = {}) {
+  const current = getCompensatedLoadRegistry();
+  const index = new Map(current.map((item) => [normalizeTrackCode(item.trackCode), item]));
+  let inserted = 0;
+  let updated = 0;
+
+  normalizeCompensatedRegistry(items).forEach((item) => {
+    const key = normalizeTrackCode(item.trackCode);
+    if (!key) return;
+    if (index.has(key)) {
+      updated += 1;
+    } else {
+      inserted += 1;
+    }
+    index.set(key, {
+      ...(index.get(key) || {}),
+      ...item,
+      updatedAt: new Date().toISOString(),
+    });
+  });
+
+  const next = Array.from(index.values()).sort((left, right) => left.trackCode.localeCompare(right.trackCode));
+  saveCompensatedLoadRegistry(next);
+  appendAuditLogs([
+    createAuditLog('compensated_registry_import', null, resolveActorMeta(options.actor), {
+      message: `${inserted} ta yangi qoplab berilgan yuk yozuvi yuklandi`,
+      details: { inserted, updated, total: next.length },
+    }),
+  ]);
+
+  return { inserted, updated, total: next.length };
+}
+
+export function updateCompensatedRecoveryWorkflow(trackCode, updates = {}, options = {}) {
+  const key = normalizeTrackCode(trackCode);
+  if (!key) return { ok: false, reason: 'invalid_track' };
+
+  const current = getCompensatedLoadRegistry();
+  const index = current.findIndex((item) => normalizeTrackCode(item.trackCode) === key);
+  const baseItem = index === -1
+    ? {
+        id: `compensated-registry-${Date.now()}`,
+        trackCode: String(trackCode || '').trim(),
+        compensatedDate: '',
+        phone: '',
+        customer: '',
+        paymentAmount: '',
+        paymentStatus: 'Kutmoqda',
+        comment: '',
+        importedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }
+    : current[index];
+
+  const next = [...current];
+  const nextOutcome = String(updates.foundCaseOutcome ?? baseItem.foundCaseOutcome ?? '').trim();
+  const nextStatus = normalizeCompensatedRecoveryStatus(updates.foundResolutionStatus ?? baseItem.foundResolutionStatus);
+
+  // Chek fayli — faqat "Mijoz pulni qaytardi" natija uchun saqlanadi
+  let nextReceipt = baseItem.receiptFile || null;
+  if (Object.prototype.hasOwnProperty.call(updates, 'receiptFile')) {
+    nextReceipt = updates.receiptFile || null;
+  }
+  // Agar natija "Mijoz pulni qaytardi" emas bo'lsa, chekni avtomatik tozalash
+  if (nextOutcome !== 'Mijoz pulni qaytardi') {
+    nextReceipt = null;
+  }
+
+  // Hodimga biriktirish mantig'i:
+  // - Foydalanuvchi statusni "Jarayonda"ga aniq tanlasa, ushbu hodimga biriktirish
+  //   (avvalgi status nima bo'lganidan qat'iy nazar — eski yozuvlar bilan ham ishlashi uchun)
+  // - "Qabul qilindi"ga qaytarilsa biriktirishni bekor qilish
+  const actor = resolveActorMeta(options.actor);
+  let assignedTo = baseItem.assignedTo || '';
+  let assignedToId = baseItem.assignedToId || null;
+  let assignedAt = baseItem.assignedAt || null;
+
+  const statusExplicitlySet = Object.prototype.hasOwnProperty.call(updates, 'foundResolutionStatus');
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'assignedTo')) {
+    // Aniq biriktirish
+    assignedTo = String(updates.assignedTo || '').trim();
+    assignedToId = updates.assignedToId ?? null;
+    assignedAt = updates.assignedAt || (assignedTo ? new Date().toISOString() : null);
+  } else if (statusExplicitlySet && (nextStatus === 'Jarayonda' || nextStatus === 'Yopildi')) {
+    // Status "Jarayonda"ga yoki "Yopildi"ga aniq tanlandi — hozirgi hodimga biriktirish
+    // Jarayonda: kim olgan bo'lsa
+    // Yopildi: kim yopgan bo'lsa
+    const actorName = actor?.actorName;
+    if (actorName && actorName !== 'System') {
+      assignedTo = actorName;
+      assignedToId = actor?.actorId ?? null;
+      assignedAt = new Date().toISOString();
+    }
+  } else if (statusExplicitlySet && nextStatus === 'Qabul qilindi') {
+    // Qabul qilindiga qaytarilsa biriktirish bekor qilinadi
+    assignedTo = '';
+    assignedToId = null;
+    assignedAt = null;
+  }
+
+  // Workflow izohi
+  let workflowComment = baseItem.workflowComment || '';
+  if (Object.prototype.hasOwnProperty.call(updates, 'workflowComment')) {
+    workflowComment = String(updates.workflowComment || '').trim();
+  }
+
+  const nextItem = {
+    ...baseItem,
+    foundCaseOutcome: nextOutcome,
+    foundResolutionStatus: nextStatus,
+    receiptFile: nextReceipt,
+    assignedTo,
+    assignedToId,
+    assignedAt,
+    workflowComment,
+    updatedAt: new Date().toISOString(),
+  };
+  if (index === -1) {
+    next.push(nextItem);
+  } else {
+    next[index] = nextItem;
+  }
+
+  saveCompensatedLoadRegistry(next);
+  appendAuditLogs([
+    createAuditLog(index === -1 ? 'compensated_recovery_workflow_created' : 'compensated_recovery_workflow_updated', null, resolveActorMeta(options.actor), {
+      message: `${nextItem.trackCode} bo'yicha topilgan yuk jarayoni yangilandi`,
+      details: {
+        trackCode: nextItem.trackCode,
+        foundCaseOutcome: nextItem.foundCaseOutcome,
+        foundResolutionStatus: nextItem.foundResolutionStatus,
+      },
+    }),
+  ]);
+
+  return { ok: true, item: nextItem };
 }
 
 export function getOtkAuditLogs(limit = null) {
@@ -200,6 +1320,21 @@ export function runAppDataMigrations() {
   const completed = readJson(MIGRATIONS_KEY, []);
   const migrations = [
     {
+      id: '2026-05-16-transfer-admin-to-jaloldin',
+      run: migrateAdminToJaloldinAccount,
+      shouldPersist: (result) => result.updated > 0 || result.removed > 0,
+    },
+    {
+      id: '2026-05-15-refresh-department-order-core',
+      run: migrateDepartmentOrderCoreTasks,
+      shouldPersist: (result) => result.updated > 0,
+    },
+    {
+      id: '2026-05-15-add-department-order-assignments',
+      run: migrateDepartmentOrderAssignments,
+      shouldPersist: (result) => result.updated > 0,
+    },
+    {
       id: '2026-05-12-close-isfandiyor-active',
       run: migrateIsfandiyorInProgressEntries,
       shouldPersist: (result) => result.updated > 0,
@@ -209,13 +1344,33 @@ export function runAppDataMigrations() {
       run: dedupeTracksKeepFirstOwner,
       shouldPersist: () => false,
     },
+    {
+      // Recovery workflow: orphan items (status='Jarayonda' lekin egasi yo'q)
+      // ni 'Qabul qilindi'ga qaytarish — yangi UX talabiga muvofiq.
+      // alwaysRun: true — bir martalik gate bilan emas, har safar tekshiriladi
+      // (idempotent; orphan bo'lmasa hech narsa o'zgarmaydi)
+      id: '2026-05-23-recovery-reset-orphan-jarayonda',
+      run: migrateRecoveryOrphansToAccepted,
+      shouldPersist: () => false,
+      alwaysRun: true,
+    },
+    {
+      // Inaktiv hodimlar (Isfandiyor, Abduvali) treklarini Bosh manager ga o'tkazish
+      // Barcha modullarda: OTK, 102, 104, AI
+      // alwaysRun: idempotent (mavjud bo'lmasa hech narsa o'zgarmaydi)
+      id: '2026-05-23-reassign-inactive-employees',
+      run: migrateInactiveEmployeesToBoshManager,
+      shouldPersist: () => false,
+      alwaysRun: true,
+    },
   ];
 
   const nextCompleted = [...completed];
   const results = [];
 
   migrations.forEach((migration) => {
-    if (nextCompleted.includes(migration.id)) {
+    // alwaysRun migratsiyalari completed ro'yxatga e'tibor bermay har safar ishlaydi
+    if (!migration.alwaysRun && nextCompleted.includes(migration.id)) {
       results.push({ migrationId: migration.id, ran: false, updated: 0, removed: 0 });
       return;
     }
@@ -226,7 +1381,7 @@ export function runAppDataMigrations() {
       ran: Boolean(result?.updated || result?.removed || result?.distributedTo),
       ...result,
     });
-    if (migration.shouldPersist(result)) {
+    if (!migration.alwaysRun && migration.shouldPersist(result)) {
       nextCompleted.push(migration.id);
     }
   });
@@ -238,13 +1393,59 @@ export function runAppDataMigrations() {
   return results;
 }
 
-export function publicUser(user) {
-  if (!user) return null;
-  const { password, ...safeUser } = user;
-  return safeUser;
+export function migrateDepartmentOrderCoreTasks() {
+  const settings = getOtkSettings();
+  const currentCore = settings.departmentOrderContent?.core || [];
+  const legacyTitles = [
+    'Murojaatlarni tizimli nazorat qilish',
+    "Yo'qolgan va kechikkan yuklarni boshqarish",
+    "Bo'limlararo muvofiqlashtirish",
+    "Hisobot va sifat ko'rsatkichlari",
+  ];
+  const shouldReplace =
+    !currentCore.length ||
+    currentCore.length <= 4 ||
+    legacyTitles.some((title, index) => currentCore[index]?.title === title);
+
+  if (!shouldReplace) {
+    return { updated: 0 };
+  }
+
+  saveOtkSettings({
+    ...settings,
+    departmentOrderContent: {
+      ...(settings.departmentOrderContent || {}),
+      core: DEFAULT_DEPARTMENT_ORDER_CONTENT.core,
+    },
+  });
+
+  return { updated: DEFAULT_DEPARTMENT_ORDER_CONTENT.core.length };
+}
+
+export function migrateDepartmentOrderAssignments() {
+  const settings = getOtkSettings();
+  const currentAssignments = settings.departmentOrderContent?.actualAssignments || [];
+  const hasCyrillic = currentAssignments.some((item) =>
+    [item.task, item.responsible, ...(item.assistants || [])].some((value) => /[\u0400-\u04FF]/.test(String(value || '')))
+  );
+
+  if (currentAssignments.length >= DEFAULT_DEPARTMENT_ORDER_CONTENT.actualAssignments.length && !hasCyrillic) {
+    return { updated: 0 };
+  }
+
+  saveOtkSettings({
+    ...settings,
+    departmentOrderContent: {
+      ...(settings.departmentOrderContent || {}),
+      actualAssignments: DEFAULT_DEPARTMENT_ORDER_CONTENT.actualAssignments,
+    },
+  });
+
+  return { updated: DEFAULT_DEPARTMENT_ORDER_CONTENT.actualAssignments.length };
 }
 
 export function getOtkEntries() {
+  hydrateComplaintsFromRemoteInBackground();
   const raw = getStorageRaw(ENTRIES_KEY);
   if (computedCache.entries.raw === raw && computedCache.entries.value) {
     return computedCache.entries.value;
@@ -256,6 +1457,7 @@ export function getOtkEntries() {
 }
 
 export function getOtkArchive() {
+  hydrateComplaintsFromRemoteInBackground();
   const raw = getStorageRaw(ARCHIVE_KEY);
   if (computedCache.archive.raw === raw && computedCache.archive.value) {
     return computedCache.archive.value;
@@ -268,15 +1470,21 @@ export function getOtkArchive() {
 
 export function saveOtkEntries(entries) {
   writeJson(ENTRIES_KEY, encodeEntryCollection(normalizeEntries(entries)));
+  scheduleComplaintsRemoteSync();
 }
 
 export function saveOtkArchive(entries) {
   writeJson(ARCHIVE_KEY, encodeEntryCollection(normalizeEntries(entries)));
+  scheduleComplaintsRemoteSync();
 }
 
 export function addOtkEntries(entries, options = {}) {
   const current = getOtkEntries();
-  const normalized = normalizeEntries(entries);
+  const normalized = normalizeEntries(entries).map((entry) =>
+    entry.status === 'Yopildi' && !entry.closedAt
+      ? { ...entry, closedAt: new Date().toISOString() }
+      : entry
+  );
   const { accepted, duplicates } = splitEntriesByActiveTrackConflicts(normalized, current);
   const next = applyPriorityRules([...accepted, ...current]);
   saveOtkEntries(next);
@@ -389,21 +1597,71 @@ export function updateOtkEntry(id, changes, options = {}) {
     return { ok: false, reason: 'duplicate_track', conflicts };
   }
 
+  const nextStatus = changes.status || currentEntry.status;
+
+  // Avtomatik biriktirish:
+  // Foydalanuvchi statusni "Jarayonda"ga aniq tanlasa — handledBy
+  // hozirgi hodimga o'zgartiriladi (kim oxirgi marta jarayonga olsa, shu egasi).
+  // Agar handledBy explicit boshqa qiymat berilgan bo'lsa, uni saqlaymiz.
+  const actor = resolveActorMeta(options.actor, currentEntry);
+  const statusExplicitlySet = Object.prototype.hasOwnProperty.call(changes, 'status');
+  let resolvedChanges = { ...changes };
+  const handledByExplicit =
+    Object.prototype.hasOwnProperty.call(changes, 'handledBy') &&
+    changes.handledBy &&
+    changes.handledBy !== 'OTK workplace';
+
+  if (statusExplicitlySet && nextStatus === 'Jarayonda' && !handledByExplicit) {
+    const actorName = actor?.actorName;
+    if (actorName && actorName !== 'System' && actorName !== 'OTK workplace') {
+      resolvedChanges = {
+        ...resolvedChanges,
+        handledBy: actorName,
+        handledById: actor.actorId ?? resolvedChanges.handledById ?? null,
+        handledByRole: actor.actorRole ?? resolvedChanges.handledByRole ?? '',
+      };
+    }
+  }
+
   const updatedEntry = normalizeOtkEntry({
     ...currentEntry,
-    ...changes,
+    ...resolvedChanges,
+    closedAt:
+      nextStatus === 'Yopildi'
+        ? currentEntry.status === 'Yopildi'
+          ? currentEntry.closedAt || currentEntry.updatedAt || new Date().toISOString()
+          : new Date().toISOString()
+        : resolvedChanges.closedAt ?? currentEntry.closedAt ?? '',
     updatedAt: new Date().toISOString(),
   });
 
   const activeWithoutCurrent = active.filter((entry) => entry.id !== id);
   const archiveWithoutCurrent = archive.filter((entry) => entry.id !== id);
+  const wasArchived = archive.some((entry) => entry.id === id);
 
-  if (updatedEntry.status === 'Yopildi') {
-    saveOtkEntries(activeWithoutCurrent);
-    saveOtkArchive(normalizeEntries([updatedEntry, ...archiveWithoutCurrent]));
+  if (currentEntry.status !== 'Yopildi' && updatedEntry.status === 'Yopildi') {
+    saveOtkArchive(archiveWithoutCurrent);
+    saveOtkEntries(applyPriorityRules([updatedEntry, ...activeWithoutCurrent]));
     appendAuditLogs([
       createAuditLog('update', updatedEntry, resolveActorMeta(options.actor, updatedEntry), {
-        message: `${updatedEntry.trackCode} trek yangilandi va arxivga o'tdi`,
+        message: `${updatedEntry.trackCode} trek yangilandi va yopildi`,
+        details: buildChangeSummary(currentEntry, updatedEntry),
+      }),
+    ]);
+    return { ok: true, entry: updatedEntry };
+  }
+
+  if (currentEntry.status === 'Yopildi' && updatedEntry.status === 'Yopildi') {
+    if (wasArchived) {
+      saveOtkEntries(activeWithoutCurrent);
+      saveOtkArchive(normalizeEntries([updatedEntry, ...archiveWithoutCurrent]));
+    } else {
+      saveOtkArchive(archiveWithoutCurrent);
+      saveOtkEntries(applyPriorityRules([updatedEntry, ...activeWithoutCurrent]));
+    }
+    appendAuditLogs([
+      createAuditLog('update', updatedEntry, resolveActorMeta(options.actor, updatedEntry), {
+        message: `${updatedEntry.trackCode} yopilgan trek yangilandi`,
         details: buildChangeSummary(currentEntry, updatedEntry),
       }),
     ]);
@@ -419,6 +1677,42 @@ export function updateOtkEntry(id, changes, options = {}) {
     }),
   ]);
   return { ok: true, entry: updatedEntry };
+}
+
+export function archiveClosedEntriesByDayEnd(now = new Date(), options = {}) {
+  const todayKey = toDateKey(now);
+  if (!todayKey) return { archived: 0, remaining: getOtkEntries() };
+
+  const current = getOtkEntries();
+  const archive = getOtkArchive();
+  const toArchive = current
+    .filter((entry) => {
+      if (entry.status !== 'Yopildi') return false;
+      const closeKey = toDateKey(entry.closedAt || entry.updatedAt || entry.date);
+      return closeKey && closeKey < todayKey;
+    })
+    .map((entry) => ({ ...entry, archivedAt: new Date().toISOString() }));
+
+  if (!toArchive.length) {
+    return { archived: 0, remaining: current };
+  }
+
+  const archivedIds = new Set(toArchive.map((entry) => entry.id));
+  const remaining = current.filter((entry) => !archivedIds.has(entry.id));
+
+  saveOtkEntries(remaining);
+  saveOtkArchive(normalizeEntries([...toArchive, ...archive]));
+  appendAuditLogs([
+    createAuditLog('auto_archive_closed', null, resolveActorMeta(options.actor), {
+      message: `${toArchive.length} ta yopilgan trek avtomatik arxivga o'tdi`,
+      details: {
+        date: todayKey,
+        count: toArchive.length,
+      },
+    }),
+  ]);
+
+  return { archived: toArchive.length, remaining };
 }
 
 export function deleteOtkEntry(id, options = {}) {
@@ -443,6 +1737,14 @@ export function deleteOtkEntry(id, options = {}) {
       },
     }),
   ]);
+
+  if (typeof window !== 'undefined' && supabase.isSupabaseEnabled) {
+    Promise.resolve()
+      .then(() => supabase.markComplaintDeletedRemote(id))
+      .catch(() => {
+        // local delete already applied
+      });
+  }
 
   return entry;
 }
@@ -510,6 +1812,249 @@ export function migrateIsfandiyorInProgressEntries() {
   return { updated: migratedEntries.length, distributedTo: targetUsers.length };
 }
 
+// ============================================================
+// Inaktiv hodimlar (Isfandiyor, Abduvali) treklarini 4 ta faol hodimga
+// TENG taqsimlash (round-robin + workload balance):
+//   Jaloldin Mirzakbarov, Saidali, Jasur, Shahnoza
+// Barcha modullarda: OTK, Module 102, 104 Moliya, Assistant AI
+// ============================================================
+// Settings'dan inaktiv hodimlar ro'yxatini o'qish (default'lar: isfandiyor, abduvali)
+function getInactiveEmployeeNames() {
+  const settings = getOtkSettings();
+  return Array.isArray(settings.inactiveEmployeeNames) && settings.inactiveEmployeeNames.length
+    ? settings.inactiveEmployeeNames.map((s) => String(s).toLowerCase())
+    : ['isfandiyor', 'abduvali'];
+}
+
+function isInactiveEmployee(value) {
+  const norm = normalizePersonLabel(value);
+  if (!norm) return false;
+  return getInactiveEmployeeNames().some((pattern) => norm.includes(pattern));
+}
+
+function buildTargetEmployees() {
+  // System users'dan mos hodimlarni topish; topilmasa fallback
+  const users = getSystemUsers().filter((u) => u.active !== false);
+  const settings = getOtkSettings();
+  const targets = Array.isArray(settings.activeTargetEmployees) && settings.activeTargetEmployees.length
+    ? settings.activeTargetEmployees
+    : [
+        { key: 'jaloldin', fallbackName: 'Jaloldin Mirzakbarov', fallbackRole: 'admin' },
+        { key: 'saidali', fallbackName: 'Saidali', fallbackRole: 'manager' },
+        { key: 'jasur', fallbackName: 'Jasur', fallbackRole: 'manager' },
+        { key: 'shahnoza', fallbackName: 'Shahnoza', fallbackRole: 'manager' },
+      ];
+  return targets.map((pattern) => {
+    const match = users.find((u) => {
+      const full = String(u.full_name || '').toLowerCase();
+      const uname = String(u.username || '').toLowerCase();
+      return full.includes(pattern.key) || uname.includes(pattern.key);
+    });
+    if (match) {
+      return {
+        id: match.id ?? null,
+        name: match.full_name || match.username || pattern.fallbackName,
+        role: match.role || pattern.fallbackRole,
+      };
+    }
+    return { id: null, name: pattern.fallbackName, role: pattern.fallbackRole };
+  });
+}
+
+// Round-robin + workload balance picker
+function makeBalancedPicker(targets, initialLoad = {}) {
+  // initialLoad: { name -> count }  — boshlang'ich yuklama
+  const load = new Map(targets.map((t) => [t.name, initialLoad[t.name] || 0]));
+  return () => {
+    let minName = null;
+    let minCount = Infinity;
+    // Birinchi (eng kam yuklangan) hodimni topish (deterministik tartibda)
+    for (const t of targets) {
+      const c = load.get(t.name) || 0;
+      if (c < minCount) {
+        minCount = c;
+        minName = t.name;
+      }
+    }
+    if (!minName) minName = targets[0].name;
+    load.set(minName, (load.get(minName) || 0) + 1);
+    return targets.find((t) => t.name === minName) || targets[0];
+  };
+}
+
+function countByOwner(items, getOwner) {
+  const counts = {};
+  for (const item of items || []) {
+    const name = String(getOwner(item) || '').trim();
+    if (!name) continue;
+    counts[name] = (counts[name] || 0) + 1;
+  }
+  return counts;
+}
+
+export function migrateInactiveEmployeesToBoshManager() {
+  const targets = buildTargetEmployees();
+  if (!targets.length) return { updated: 0 };
+
+  const now = new Date().toISOString();
+  let totalUpdated = 0;
+  const targetNames = targets.map((t) => t.name);
+
+  // Mavjud yuklamani hisoblash (faqat aktiv yozuvlar)
+  const otkActive = getOtkEntries();
+  const otkArchive = getOtkArchive();
+  const registry = getCompensatedLoadRegistry();
+  const aiRequests = Array.isArray(readJson(ASSISTANT_AI_KEY, [])) ? readJson(ASSISTANT_AI_KEY, []) : [];
+  let m102Items = [];
+  try {
+    const raw = localStorage.getItem('cargo-qc-module-102');
+    if (raw) m102Items = JSON.parse(raw) || [];
+  } catch { /* ignore */ }
+
+  // Inaktiv emas + targetNames ichidagi yozuvlar bo'yicha mavjud yuklamani hisoblash
+  const filterValid = (val) => targetNames.includes(String(val || '').trim());
+  const initialLoad = {};
+  for (const name of targetNames) initialLoad[name] = 0;
+
+  const addLoad = (items, getOwner) => {
+    for (const item of items) {
+      const owner = String(getOwner(item) || '').trim();
+      if (filterValid(owner)) {
+        initialLoad[owner] = (initialLoad[owner] || 0) + 1;
+      }
+    }
+  };
+  addLoad(otkActive, (e) => e.handledBy);
+  addLoad(registry, (e) => e.assignedTo);
+  addLoad(aiRequests, (e) => e.handledBy);
+  addLoad(m102Items, (e) => e.lockedBy);
+
+  const pick = makeBalancedPicker(targets, initialLoad);
+
+  // 1) OTK Murojaatlar (faol + arxiv)
+  let otkActiveChanged = false;
+  const otkActiveNext = otkActive.map((entry) => {
+    if (!isInactiveEmployee(entry.handledBy) && !isInactiveEmployee(entry.lastUpdatedBy)) return entry;
+    const assignee = pick();
+    totalUpdated += 1;
+    otkActiveChanged = true;
+    return normalizeOtkEntry({
+      ...entry,
+      handledBy: assignee.name,
+      handledById: assignee.id,
+      handledByRole: assignee.role,
+      lastUpdatedBy: assignee.name,
+      lastUpdatedById: assignee.id,
+      lastUpdatedByRole: assignee.role,
+      updatedAt: now,
+    });
+  });
+  let otkArchiveChanged = false;
+  const otkArchiveNext = otkArchive.map((entry) => {
+    if (!isInactiveEmployee(entry.handledBy)) return entry;
+    const assignee = pick();
+    totalUpdated += 1;
+    otkArchiveChanged = true;
+    return normalizeOtkEntry({
+      ...entry,
+      handledBy: assignee.name,
+      handledById: assignee.id,
+      handledByRole: assignee.role,
+      updatedAt: now,
+    });
+  });
+  if (otkActiveChanged) saveOtkEntries(otkActiveNext);
+  if (otkArchiveChanged) saveOtkArchive(otkArchiveNext);
+
+  // 2) 104 Moliya — assignedTo
+  let registryChanged = false;
+  const registryNext = registry.map((item) => {
+    if (!isInactiveEmployee(item?.assignedTo)) return item;
+    const assignee = pick();
+    totalUpdated += 1;
+    registryChanged = true;
+    return {
+      ...item,
+      assignedTo: assignee.name,
+      assignedToId: assignee.id,
+      assignedAt: item.assignedAt || now,
+      updatedAt: now,
+    };
+  });
+  if (registryChanged) saveCompensatedLoadRegistry(registryNext);
+
+  // 3) Assistant AI requests
+  if (Array.isArray(aiRequests) && aiRequests.length) {
+    let aiChanged = false;
+    const aiNext = aiRequests.map((req) => {
+      if (!isInactiveEmployee(req?.handledBy)) return req;
+      const assignee = pick();
+      totalUpdated += 1;
+      aiChanged = true;
+      return { ...req, handledBy: assignee.name, updatedAt: now };
+    });
+    if (aiChanged) writeJson(ASSISTANT_AI_KEY, aiNext);
+  }
+
+  // 4) Module 102 — lockedBy
+  try {
+    if (Array.isArray(m102Items) && m102Items.length) {
+      let m102Changed = false;
+      const next102 = m102Items.map((entry) => {
+        if (!isInactiveEmployee(entry?.lockedBy)) return entry;
+        const assignee = pick();
+        totalUpdated += 1;
+        m102Changed = true;
+        return { ...entry, lockedBy: assignee.name, lockedAt: entry.lockedAt || now, updatedAt: now };
+      });
+      if (m102Changed) localStorage.setItem('cargo-qc-module-102', JSON.stringify(next102));
+    }
+  } catch {
+    // Module 102 — silent fail
+  }
+
+  if (totalUpdated > 0) {
+    appendAuditLogs([
+      createAuditLog('migration', null, null, {
+        message: `Inaktiv hodimlar (${getInactiveEmployeeNames().join(', ')}) ${totalUpdated} ta yozuvi ${targetNames.join(', ')} orasida teng taqsimlandi`,
+        details: { updated: totalUpdated, targets: targetNames },
+      }),
+    ]);
+  }
+
+  return { updated: totalUpdated, targets: targetNames };
+}
+
+// Recovery workflow migration:
+// Eski yozuvlarda foundResolutionStatus='Jarayonda' edi (default), lekin
+// hodim biriktirilmagan. Bularni 'Qabul qilindi'ga qaytaramiz — yangi UX bo'yicha.
+export function migrateRecoveryOrphansToAccepted() {
+  const registry = getCompensatedLoadRegistry();
+  if (!Array.isArray(registry) || registry.length === 0) {
+    return { updated: 0 };
+  }
+
+  let updated = 0;
+  const next = registry.map((item) => {
+    const status = normalizeCompensatedRecoveryStatus(item?.foundResolutionStatus);
+    const hasOwner = Boolean(String(item?.assignedTo || '').trim() || item?.assignedToId);
+    if (status === 'Jarayonda' && !hasOwner) {
+      updated += 1;
+      return {
+        ...item,
+        foundResolutionStatus: 'Qabul qilindi',
+        updatedAt: new Date().toISOString(),
+      };
+    }
+    return item;
+  });
+
+  if (updated > 0) {
+    saveCompensatedLoadRegistry(next);
+  }
+  return { updated };
+}
+
 export function dedupeTracksKeepFirstOwner() {
   const active = getOtkEntries();
   const archive = getOtkArchive();
@@ -535,6 +2080,11 @@ export function dedupeTracksKeepFirstOwner() {
   groups.forEach((entries) => {
     if (entries.length <= 1) {
       keepIds.add(entries[0]?.id);
+      return;
+    }
+
+    if (findCompensatedRecoveryPair(entries)) {
+      entries.forEach((entry) => keepIds.add(entry.id));
       return;
     }
 
@@ -594,10 +2144,8 @@ export function archiveEntriesForDate(date = new Date(), options = {}) {
   return { archived: toArchive.length, remaining };
 }
 
-export function toDateKey(date) {
-  const value = parseAppDate(date);
-  if (!value || Number.isNaN(value.getTime())) return '';
-  return value.toISOString().slice(0, 10);
+export function getRecoveredCompensatedLoads() {
+  return buildRecoveredCompensatedLoads(getAllOtkRecords());
 }
 
 export function getAllOtkRecords() {
@@ -833,83 +2381,76 @@ export function getOtkDashboardStats(range = {}, options = {}) {
   return value;
 }
 
-export function subscribeToOtkData(callback, options = {}) {
-  if (typeof window === 'undefined') {
-    return () => {};
-  }
+// ============================================================
+// SINGLETON subscribe hub — har sahifa alohida interval/listener
+// o'rniga, butun ilova uchun bitta global event manbai.
+// Bu memory leak'larni oldini oladi va performansga ta'sirini
+// kamaytiradi (multiplier effect yo'q).
+// ============================================================
+const otkSubscribers = new Set();
+let otkHubInitialized = false;
+let otkHubTimeoutId = null;
+let otkHubIntervalId = null;
 
-  const debounceMs = Number.isFinite(options.debounceMs) ? options.debounceMs : 80;
-  let timeoutId = null;
-
-  const run = () => {
-    timeoutId = null;
-    clearComputedCaches();
-    callback();
-  };
-
-  const schedule = () => {
-    if (timeoutId != null) {
-      return;
+function notifyOtkSubscribers() {
+  otkHubTimeoutId = null;
+  clearComputedCaches();
+  otkSubscribers.forEach((sub) => {
+    try {
+      sub.callback();
+    } catch (error) {
+      console.error('[subscribeToOtkData] subscriber callback error:', error);
     }
-    timeoutId = window.setTimeout(run, debounceMs);
-  };
+  });
+}
+
+function scheduleOtkHubNotify(debounceMs = 80) {
+  if (otkHubTimeoutId != null) return;
+  otkHubTimeoutId = window.setTimeout(notifyOtkSubscribers, debounceMs);
+}
+
+function initOtkHubIfNeeded() {
+  if (otkHubInitialized || typeof window === 'undefined') return;
+  otkHubInitialized = true;
 
   const onVisibility = () => {
     if (document.visibilityState === 'visible') {
-      schedule();
+      refreshRemoteBackedData(true);
+      scheduleOtkHubNotify();
     }
   };
+  const onFocus = () => {
+    refreshRemoteBackedData(true);
+    scheduleOtkHubNotify();
+  };
+  const onChange = () => scheduleOtkHubNotify();
 
-  window.addEventListener('cargo-qc-data-changed', schedule);
-  window.addEventListener('storage', schedule);
-  window.addEventListener('focus', schedule);
+  window.addEventListener('cargo-qc-data-changed', onChange);
+  window.addEventListener('storage', onChange);
+  window.addEventListener('focus', onFocus);
   document.addEventListener('visibilitychange', onVisibility);
+  refreshRemoteBackedData(true);
+  // Bitta global interval — barcha subscriber'lar uchun
+  otkHubIntervalId = window.setInterval(() => {
+    refreshRemoteBackedData();
+  }, 25000);
+}
+
+export function subscribeToOtkData(callback, options = {}) {
+  if (typeof window === 'undefined' || typeof callback !== 'function') {
+    return () => {};
+  }
+  initOtkHubIfNeeded();
+
+  // Har subscriberning o'z debounce intervali bo'lishi shart emas —
+  // global hub allaqachon 80ms debounce qiladi. options qabul qilamiz
+  // lekin asosan e'tiborga olmaymiz (backward compat).
+  const subscriber = { callback, debounceMs: options.debounceMs || 80 };
+  otkSubscribers.add(subscriber);
 
   return () => {
-    if (timeoutId != null) {
-      window.clearTimeout(timeoutId);
-    }
-    window.removeEventListener('cargo-qc-data-changed', schedule);
-    window.removeEventListener('storage', schedule);
-    window.removeEventListener('focus', schedule);
-    document.removeEventListener('visibilitychange', onVisibility);
+    otkSubscribers.delete(subscriber);
   };
-}
-
-export function parseTrackNumbers(value) {
-  return Array.from(
-    new Set(
-      value
-        .split(/[\s,;]+/)
-        .map((item) => item.trim())
-        .filter(Boolean)
-    )
-  );
-}
-
-export function getWaitingDays(date) {
-  const created = parseAppDate(date);
-  if (!created || Number.isNaN(created.getTime())) return 0;
-  const today = new Date();
-  const start = new Date(created.getFullYear(), created.getMonth(), created.getDate());
-  const end = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-  return Math.max(0, Math.floor((end - start) / 86400000));
-}
-
-export function getPriorityByWaitingDays(days) {
-  if (days >= 5) return 'Yuqori';
-  if (days >= 2) return "O'rta";
-  return 'Past';
-}
-
-export function applyPriorityRules(entries) {
-  return entries.map((entry) => {
-    if (entry.status === 'Yopildi') return entry;
-    return {
-      ...entry,
-      priority: getPriorityByWaitingDays(getWaitingDays(entry.date)),
-    };
-  });
 }
 
 function countBy(items, key) {
@@ -1020,7 +2561,7 @@ export function findTrackConflicts(trackCodes = [], options = {}) {
       });
     }
     const bucket = index.get(key);
-    if (entry.archiveStatus === 'archived' || entry.status === 'Yopildi') {
+    if (entry.archiveStatus === 'archived' || entry.status === 'Yopildi' || isCompensatedProblemType(entry.problemType)) {
       bucket.archivedMatches.push(entry);
     } else {
       bucket.activeMatches.push(entry);
@@ -1050,7 +2591,12 @@ export function findTrackConflicts(trackCodes = [], options = {}) {
 }
 
 function splitEntriesByActiveTrackConflicts(entries, currentEntries = []) {
-  const activeTrackKeys = new Set(currentEntries.map((entry) => normalizeTrackCode(entry.trackCode)).filter(Boolean));
+  const activeTrackKeys = new Set(
+    currentEntries
+      .filter((entry) => !isCompensatedProblemType(entry.problemType))
+      .map((entry) => normalizeTrackCode(entry.trackCode))
+      .filter(Boolean)
+  );
   const seenIncoming = new Set();
   const accepted = [];
   const duplicates = [];
@@ -1245,46 +2791,124 @@ function countAssignedEntries(entries, user) {
   }).length;
 }
 
-function isIsfandiyorLabel(value) {
-  return normalizePersonLabel(value).includes('isfandiyor');
+// Predicate va normalizer helperlar dataPredicates.js'ga ko'chirildi:
+// isIsfandiyorLabel, normalizePersonLabel, isCompensatedProblemType,
+// isCompensatedRecoveredProblemType, normalizeTrackCode,
+// compareTrackEntryOrder, resolveEntryOrderTime
+
+function buildRecoveredCompensatedLoads(records = []) {
+  const registry = getCompensatedLoadRegistry();
+  const grouped = new Map();
+
+  records.forEach((entry) => {
+    const key = normalizeTrackCode(entry.trackCode);
+    if (!key) return;
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(entry);
+  });
+
+  const trackKeys = Array.from(new Set([...grouped.keys(), ...registry.map((item) => normalizeTrackCode(item.trackCode)).filter(Boolean)]));
+
+  return trackKeys
+    .map((trackKey) => {
+      const entries = grouped.get(trackKey) || [];
+      const registryItem = registry.find((item) => normalizeTrackCode(item.trackCode) === trackKey) || null;
+      const latestPair = findCompensatedRecoveryPair(entries);
+      const foundEntry = latestPair?.foundEntry || findLatestFoundEntry(entries);
+      const compensationEntry = latestPair?.compensationEntry || findLatestCompensationEntry(entries);
+
+      if (!registryItem && !latestPair) return null;
+      if (!foundEntry) return null;
+
+      const compensationDateRaw = registryItem?.compensatedDate || compensationEntry?.date || null;
+      const compensationDate = parseAppDate(compensationDateRaw);
+      const foundDate = parseAppDate(foundEntry.date);
+      const compensationDay = compensationDate
+        ? new Date(compensationDate.getFullYear(), compensationDate.getMonth(), compensationDate.getDate())
+        : null;
+      const foundDay = foundDate
+        ? new Date(foundDate.getFullYear(), foundDate.getMonth(), foundDate.getDate())
+        : null;
+      const recoveredDays = compensationDay && foundDay
+        ? Math.max(0, Math.round((foundDay - compensationDay) / 86400000))
+        : null;
+
+      return {
+        id: `compensated-${foundEntry.id || trackKey}`,
+        trackCode: foundEntry.trackCode || registryItem?.trackCode || compensationEntry?.trackCode || '',
+        compensationEntry,
+        foundEntry,
+        compensationDate: compensationDateRaw,
+        foundDate: foundEntry.date,
+        recoveredDays,
+        department: foundEntry.department || compensationEntry?.department || 'Belgilanmagan',
+        requestSource: foundEntry.requestSource || compensationEntry?.requestSource || 'Belgilanmagan',
+        handledBy: foundEntry.handledBy || compensationEntry?.handledBy || '',
+        status: foundEntry.status,
+        priority: foundEntry.priority,
+        phone: registryItem?.phone || '',
+        customer: registryItem?.customer || '',
+        paymentAmount: registryItem?.paymentAmount || '',
+        paymentStatus: normalizeCompensatedPaymentStatus(registryItem?.paymentStatus),
+        foundCaseOutcome: String(registryItem?.foundCaseOutcome || '').trim(),
+        foundResolutionStatus: normalizeCompensatedRecoveryStatus(registryItem?.foundResolutionStatus),
+        receiptFile: registryItem?.receiptFile || null,
+        assignedTo: String(registryItem?.assignedTo || '').trim(),
+        assignedToId: registryItem?.assignedToId ?? null,
+        assignedAt: registryItem?.assignedAt || null,
+        workflowComment: String(registryItem?.workflowComment || '').trim(),
+        compensationComment: registryItem?.comment || compensationEntry?.comment || '',
+        foundComment: foundEntry.comment || '',
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => {
+      const timeDiff = resolveEntryOrderTime(right.foundEntry) - resolveEntryOrderTime(left.foundEntry);
+      if (timeDiff !== 0) return timeDiff;
+      return left.trackCode.localeCompare(right.trackCode);
+    });
 }
 
-function normalizePersonLabel(value) {
-  return String(value || '')
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, ' ');
+function findCompensatedRecoveryPair(entries = []) {
+  const sorted = entries.slice().sort(compareTrackEntryOrder);
+  let latestPair = null;
+  let latestCompensation = null;
+
+  sorted.forEach((entry) => {
+    if (isCompensatedProblemType(entry.problemType)) {
+      latestCompensation = entry;
+      return;
+    }
+
+    if (latestCompensation && latestCompensation.id !== entry.id && isCompensatedRecoveredProblemType(entry.problemType)) {
+      latestPair = {
+        compensationEntry: latestCompensation,
+        foundEntry: entry,
+      };
+    }
+  });
+
+  return latestPair;
 }
 
-function normalizeTrackCode(value) {
-  return String(value || '')
-    .trim()
-    .toLowerCase();
+function findLatestCompensationEntry(entries = []) {
+  return entries
+    .filter((entry) => isCompensatedProblemType(entry.problemType))
+    .sort((left, right) => resolveEntryOrderTime(right) - resolveEntryOrderTime(left) || String(left.id).localeCompare(String(right.id)))[0]
+    || null;
 }
 
-function compareTrackEntryOrder(left, right) {
-  const leftTime = resolveEntryOrderTime(left);
-  const rightTime = resolveEntryOrderTime(right);
-
-  if (leftTime !== rightTime) return leftTime - rightTime;
-
-  const leftStatusRank = left.archiveStatus === 'active' ? 0 : 1;
-  const rightStatusRank = right.archiveStatus === 'active' ? 0 : 1;
-  if (leftStatusRank !== rightStatusRank) return leftStatusRank - rightStatusRank;
-
-  return String(left.id).localeCompare(String(right.id));
+function findLatestFoundEntry(entries = []) {
+  return entries
+    .filter((entry) => !isCompensatedProblemType(entry.problemType) && isCompensatedRecoveredProblemType(entry.problemType))
+    .sort((left, right) => resolveEntryOrderTime(right) - resolveEntryOrderTime(left) || String(left.id).localeCompare(String(right.id)))[0]
+    || null;
 }
 
-function resolveEntryOrderTime(entry) {
-  return [
-    entry?.date,
-    entry?.importedAt,
-    entry?.updatedAt,
-  ]
-    .map((value) => Date.parse(value))
-    .find((value) => Number.isFinite(value))
-    ?? Number.MAX_SAFE_INTEGER;
-}
+// Compensated registry normalizatorlari compensatedNormalizer.js'ga ko'chirildi:
+// normalizeCompensatedRegistry, normalizeOptionalRegistryDate,
+// normalizePaymentAmount, normalizeCompensatedPaymentStatus,
+// normalizeCompensatedRecoveryStatus
 
 function resolveActorMeta(actor, fallbackEntry = null) {
   return {
@@ -1362,22 +2986,26 @@ function buildDuplicateTrackStats(records = []) {
     if (!groups.has(key)) {
       groups.set(key, {
         trackCode: entry.trackCode,
-        count: 0,
-        activeCount: 0,
-        archivedCount: 0,
+        entries: [],
       });
     }
     const group = groups.get(key);
-    group.count += 1;
-    if (entry.archiveStatus === 'archived' || entry.status === 'Yopildi') {
-      group.archivedCount += 1;
-    } else {
-      group.activeCount += 1;
-    }
+    group.entries.push(entry);
   });
 
   const duplicates = Array.from(groups.values())
+    .map((group) => {
+      const activeCount = group.entries.filter((entry) => entry.archiveStatus !== 'archived' && entry.status !== 'Yopildi').length;
+      const archivedCount = group.entries.length - activeCount;
+      return {
+        trackCode: group.trackCode,
+        count: group.entries.length,
+        activeCount,
+        archivedCount,
+      };
+    })
     .filter((group) => group.count > 1)
+    .filter((group) => !findCompensatedRecoveryPair(records.filter((entry) => normalizeTrackCode(entry.trackCode) === normalizeTrackCode(group.trackCode))))
     .sort((a, b) => b.count - a.count || a.trackCode.localeCompare(b.trackCode));
 
   return {
@@ -1394,7 +3022,7 @@ function buildMonthlyReport(records = [], options = {}) {
     })
     .filter(Boolean);
 
-  const configuredTypes = getOtkSettings().problemTypes || [];
+  const configuredTypes = (getOtkSettings().problemTypes || []).map((item) => item.name).filter(Boolean);
   const nowYear = new Date().getFullYear();
   const requestedYear = Number(options.reportYear);
   const createTemplateReport = (selectedYear, availableYears) => {

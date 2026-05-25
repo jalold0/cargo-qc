@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, Building2, CalendarClock, Filter, PackageCheck, RefreshCw, Search, Send } from 'lucide-react';
+import { AlertTriangle, Building2, CalendarClock, Filter, PackageCheck, RefreshCw, Search, Send, X } from 'lucide-react';
 import { format } from 'date-fns';
 import { clsx } from 'clsx';
 import { getOtkEntries, getOtkSettings, subscribeToOtkData } from '../services/localData';
@@ -142,15 +142,25 @@ export default function BranchesPage() {
       </section>
 
       <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-        <div className="grid gap-3 lg:grid-cols-[1fr_220px_220px]">
+        <div className="grid gap-3 lg:justify-between lg:grid-cols-[minmax(0,520px)_220px_220px] xl:grid-cols-[minmax(0,560px)_220px_220px]">
           <div className="relative">
             <Search size={17} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               placeholder={t('searchComplaints')}
-              className="w-full rounded-2xl border border-slate-200 bg-slate-50/70 py-3 pl-10 pr-3 text-sm outline-none transition focus:border-slate-400 focus:ring-4 focus:ring-slate-200/70 dark:border-slate-700 dark:bg-slate-950 dark:text-white dark:focus:ring-slate-800"
+              className="w-full rounded-2xl border border-slate-200 bg-slate-50/70 py-3 pl-10 pr-12 text-sm outline-none transition focus:border-slate-400 focus:ring-4 focus:ring-slate-200/70 dark:border-slate-700 dark:bg-slate-950 dark:text-white dark:focus:ring-slate-800"
             />
+            {search ? (
+              <button
+                type="button"
+                onClick={() => setSearch('')}
+                className="absolute right-3 top-1/2 -translate-y-1/2 rounded-lg p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+                title={t('clear')}
+              >
+                <X size={16} />
+              </button>
+            ) : null}
           </div>
 
           <SelectFilter icon={Filter} value={branch} onChange={setBranch} options={settings.departments} allLabel={t('allDepartments')} />

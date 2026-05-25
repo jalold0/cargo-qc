@@ -2,11 +2,12 @@ import { Fragment, useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, Check, ImageUp, Pencil, Plus, RotateCcw, Save, Shield, Trash2, UserRound, X } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { DEFAULT_USERS, getOtkSettings, getSystemUsers, publicUser, saveSystemUsers, subscribeToOtkData } from '../services/localData';
-import { ACCESS_KEYS, canManageSettings, getResolvedPermissions, hasCustomPermissions, isAdminRole, sanitizePermissions, SETTINGS_MANAGE_KEY } from '../services/access';
+import { hashPassword, isHashed } from '../services/authHash';
+import { ACCESS_KEYS, canManageSettings, getResolvedPermissions, hasCustomPermissions, isAdminRole, isManagerRole, sanitizePermissions, SETTINGS_MANAGE_KEY, SETTINGS_SECTION_KEYS } from '../services/access';
 import { useAuthStore } from '../store/authStore';
 import { useT } from '../i18n';
 
-export default function UsersPage() {
+export function UsersManagementSection({ embedded = false, hideHeader = false }) {
   const t = useT();
   const { user: currentUser, updateUser } = useAuthStore();
   const [settings] = useState(() => getOtkSettings());
@@ -25,7 +26,10 @@ export default function UsersPage() {
     password: '',
     role: defaultRole,
     avatarUrl: '',
+    workStart: '',
+    workEnd: '',
   });
+  const showWorkTimeField = isAdminRole(form.role) || isManagerRole(form.role);
 
   const updateUsers = (next) => {
     setUsers(next);
@@ -41,7 +45,7 @@ export default function UsersPage() {
   };
 
   const resetForm = () => {
-    setForm({ full_name: '', username: '', password: '', role: defaultRole, avatarUrl: '' });
+    setForm({ full_name: '', username: '', password: '', role: defaultRole, avatarUrl: '', workStart: '', workEnd: '' });
     setEditingUserId(null);
   };
 
@@ -57,20 +61,37 @@ export default function UsersPage() {
     event.target.value = '';
   };
 
-  const addUser = (event) => {
+  const addUser = async (event) => {
     event.preventDefault();
     const fullName = form.full_name.trim();
     const username = form.username.trim().toLowerCase();
     const password = form.password.trim();
+    const workStart = showWorkTimeField ? form.workStart || '' : '';
+    const workEnd = showWorkTimeField ? form.workEnd || '' : '';
 
-    if (!fullName || !username || !password) {
+    // Yangi user qo'shilganda parol majburiy
+    // Edit paytida bo'sh bo'lsa — eski parol qoldi (o'zgartirmaymiz)
+    const isEditMode = Boolean(editingUserId);
+    if (!fullName || !username || (!isEditMode && !password)) {
       toast.error(`${t('employeeName')}, ${t('username')} va ${t('password')} majburiy.`);
+      return;
+    }
+
+    if (showWorkTimeField && (!workStart || !workEnd)) {
+      toast.error(`${t('workStart')} / ${t('workEnd')} majburiy.`);
       return;
     }
 
     if (users.some((user) => user.username.toLowerCase() === username && user.id !== editingUserId)) {
       toast.error(t('duplicateName'));
       return;
+    }
+
+    // Parolni SHA-256 hash qilish (plain-text saqlamaslik uchun)
+    // Edit paytida parol bo'sh bo'lsa, eski parolni qoldiramiz
+    let nextPassword = '';
+    if (password) {
+      nextPassword = isHashed(password) ? password : await hashPassword(password);
     }
 
     if (editingUserId) {
@@ -81,9 +102,11 @@ export default function UsersPage() {
                 ...user,
                 full_name: fullName,
                 username,
-                password,
+                password: nextPassword || user.password, // bo'sh bo'lsa eski parolni saqlash
                 role: form.role,
                 avatarUrl: form.avatarUrl.trim(),
+                workStart,
+                workEnd,
               }
             : user
         )
@@ -99,10 +122,12 @@ export default function UsersPage() {
         id: Date.now(),
         full_name: fullName,
         username,
-        password,
+        password: nextPassword,
         role: form.role,
         active: true,
         avatarUrl: form.avatarUrl.trim(),
+        workStart,
+        workEnd,
       },
     ]);
     resetForm();
@@ -127,9 +152,13 @@ export default function UsersPage() {
     setForm({
       full_name: targetUser.full_name || '',
       username: targetUser.username || '',
-      password: targetUser.password || '',
+      // Parolni edit'da BO'SH ko'rsatish — hash'ni foydalanuvchiga ko'rsatmaslik.
+      // Foydalanuvchi parolni o'zgartirmasa, eski parol qoladi.
+      password: '',
       role: targetUser.role || defaultRole,
       avatarUrl: targetUser.avatarUrl || '',
+      workStart: targetUser.workStart || '',
+      workEnd: targetUser.workEnd || '',
     });
     setExpandedUserId(null);
   };
@@ -156,9 +185,15 @@ export default function UsersPage() {
     if (isAdminRole(targetUser.role)) return;
 
     const currentPermissions = getResolvedPermissions(targetUser);
-    const nextPermissions = currentPermissions.includes(permissionKey)
+    let nextPermissions = currentPermissions.includes(permissionKey)
       ? currentPermissions.filter((item) => item !== permissionKey)
       : [...currentPermissions, permissionKey];
+
+    if (permissionKey === 'settings' && !nextPermissions.includes('settings')) {
+      nextPermissions = nextPermissions.filter(
+        (item) => item !== SETTINGS_MANAGE_KEY && !SETTINGS_SECTION_KEYS.includes(item)
+      );
+    }
 
     const sanitizedPermissions = sanitizePermissions(nextPermissions).filter(
       (item) => item !== SETTINGS_MANAGE_KEY || nextPermissions.includes(SETTINGS_MANAGE_KEY)
@@ -192,25 +227,43 @@ export default function UsersPage() {
   };
 
   return (
-    <div className="space-y-5 animate-fade-in">
-      <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-slate-950 dark:text-white">{t('users')}</h1>
-          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-            {t('usersSubtitle')}
-          </p>
+    <div className={embedded ? 'space-y-5' : 'space-y-5 animate-fade-in'}>
+      {!embedded && !hideHeader && (
+        <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight text-slate-950 dark:text-white">{t('users')}</h1>
+            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+              {t('usersSubtitle')}
+            </p>
+          </div>
+          <button
+            onClick={resetUsers}
+            className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+          >
+            <RotateCcw size={16} />
+            {t('resetDefaults')}
+          </button>
         </div>
-        <button
-          onClick={resetUsers}
-          className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
-        >
-          <RotateCcw size={16} />
-          {t('resetDefaults')}
-        </button>
-      </div>
+      )}
 
-      <div className="grid gap-5 lg:grid-cols-[360px_1fr]">
-        <form onSubmit={addUser} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+      {embedded && !hideHeader && (
+        <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-xl font-semibold tracking-tight text-slate-950 dark:text-white">{t('users')}</h2>
+            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{t('usersSubtitle')}</p>
+          </div>
+          <button
+            onClick={resetUsers}
+            className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+          >
+            <RotateCcw size={16} />
+            {t('resetDefaults')}
+          </button>
+        </div>
+      )}
+
+      <div className="grid gap-5 xl:grid-cols-[320px_minmax(0,1fr)]">
+        <form onSubmit={addUser} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900 xl:max-w-[320px]">
           <div className="mb-4 flex items-center gap-2">
             <div className="rounded-lg bg-slate-100 p-2 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
               <UserRound size={17} />
@@ -263,12 +316,46 @@ export default function UsersPage() {
               </div>
             </Field>
             <Field label={t('role')}>
-              <select value={form.role} onChange={(event) => updateForm('role', event.target.value)} className={inputClass()}>
+              <select
+                value={form.role}
+                onChange={(event) => {
+                  const nextRole = event.target.value;
+                  setForm((current) => ({
+                    ...current,
+                    role: nextRole,
+                    workStart: isAdminRole(nextRole) || isManagerRole(nextRole) ? current.workStart : '',
+                    workEnd: isAdminRole(nextRole) || isManagerRole(nextRole) ? current.workEnd : '',
+                  }));
+                }}
+                className={inputClass()}
+              >
                 {roleOptions.map((role) => (
                   <option key={role} value={role}>{formatRole(role)}</option>
                 ))}
               </select>
             </Field>
+            {showWorkTimeField && (
+              <Field label={t('workHours')}>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <input
+                    type="time"
+                    value={form.workStart}
+                    onChange={(event) => updateForm('workStart', event.target.value)}
+                    className={inputClass()}
+                  />
+                  <input
+                    type="time"
+                    value={form.workEnd}
+                    onChange={(event) => updateForm('workEnd', event.target.value)}
+                    className={inputClass()}
+                  />
+                </div>
+                <div className="mt-2 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+                  <span>{t('workStart')}</span>
+                  <span>{t('workEnd')}</span>
+                </div>
+              </Field>
+            )}
             <button
               type="submit"
               className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 dark:bg-white dark:text-slate-950 dark:hover:bg-slate-200"
@@ -289,15 +376,16 @@ export default function UsersPage() {
           </div>
         </form>
 
-        <section className="rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+        <section className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+          <div className="w-full overflow-x-auto">
+            <table className="min-w-[1100px] text-sm">
               <thead>
                 <tr className="border-b border-slate-200 bg-slate-50 text-left dark:border-slate-800 dark:bg-slate-950/80">
                   <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('employee')}</th>
                   <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('profile')}</th>
                   <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">Login</th>
                   <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('role')}</th>
+                  <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('workHours')}</th>
                   <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('password')}</th>
                   <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('permissions')}</th>
                   <th className="px-4 py-3" />
@@ -310,6 +398,7 @@ export default function UsersPage() {
                   const customPermissions = hasCustomPermissions(user);
                   const permissionSummary = buildPermissionSummary(permissions, t);
                   const settingsAllowed = canManageSettings(user);
+                  const settingsEnabled = permissions.includes('settings');
 
                   return (
                     <Fragment key={user.id}>
@@ -326,6 +415,11 @@ export default function UsersPage() {
                         </td>
                         <td className="px-4 py-3 font-mono text-slate-600 dark:text-slate-300">{user.username}</td>
                         <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{formatRole(user.role)}</td>
+                        <td className="px-4 py-3 text-slate-600 dark:text-slate-300">
+                          {isAdminRole(user.role) || isManagerRole(user.role)
+                            ? formatWorkTimeRange(user)
+                            : '-'}
+                        </td>
                         <td className="px-4 py-3 font-mono text-slate-500 dark:text-slate-400">{user.password}</td>
                         <td className="px-4 py-3">
                           <div className="flex flex-wrap gap-1.5">
@@ -399,7 +493,7 @@ export default function UsersPage() {
                       </tr>
                       {expanded && !isAdminRole(user.role) && (
                         <tr>
-                          <td colSpan={7} className="bg-slate-50/70 px-4 py-4 dark:bg-slate-950/40">
+                          <td colSpan={8} className="bg-slate-50/70 px-4 py-4 dark:bg-slate-950/40">
                             <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
                               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                                 <div>
@@ -468,6 +562,48 @@ export default function UsersPage() {
                                   );
                                 })}
                               </div>
+
+                              {settingsEnabled && (
+                                <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-slate-800 dark:bg-slate-950/40">
+                                  <div>
+                                    <h4 className="text-sm font-semibold text-slate-950 dark:text-white">{t('settings')}</h4>
+                                    <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{t('settingsInnerAccessDescription')}</p>
+                                  </div>
+
+                                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                                    {SETTINGS_PERMISSION_OPTIONS.map((permission) => {
+                                      const checked = permission.key === SETTINGS_MANAGE_KEY
+                                        ? settingsAllowed
+                                        : permissions.includes(permission.key);
+
+                                      return (
+                                        <button
+                                          key={permission.key}
+                                          type="button"
+                                          onClick={() => togglePermission(user, permission.key)}
+                                          className={`flex items-start gap-3 rounded-xl border px-3 py-3 text-left transition ${
+                                            checked
+                                              ? 'border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-100'
+                                              : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800'
+                                          }`}
+                                        >
+                                          <span className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border ${
+                                            checked
+                                              ? 'border-emerald-500 bg-emerald-500 text-white'
+                                              : 'border-slate-300 bg-white text-transparent dark:border-slate-700 dark:bg-slate-950'
+                                          }`}>
+                                            <Check size={12} />
+                                          </span>
+                                          <span>
+                                            <span className="block text-sm font-semibold">{t(permission.labelKey)}</span>
+                                            <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">{t(permission.descriptionKey)}</span>
+                                          </span>
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              )}
                             </div>
                           </td>
                         </tr>
@@ -517,6 +653,9 @@ export default function UsersPage() {
   );
 }
 
+// NOTE: Default UsersPage olib tashlandi — App.jsx'da `/users` route Navigate to "/settings".
+// Faqat `UsersManagementSection` named export'i ishlatiladi (SettingsPage'da embed qilingan).
+
 function Field({ label, children }) {
   return (
     <label className="block">
@@ -528,6 +667,15 @@ function Field({ label, children }) {
 
 function inputClass() {
   return 'w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none transition focus:border-slate-400 focus:ring-4 focus:ring-slate-200/70 dark:border-slate-700 dark:bg-slate-950 dark:text-white dark:focus:ring-slate-800';
+}
+
+function formatWorkTimeRange(user) {
+  const workStart = String(user?.workStart || '').trim();
+  const workEnd = String(user?.workEnd || '').trim();
+  if (!workStart && !workEnd) return '-';
+  if (!workStart) return `${workEnd} gacha`;
+  if (!workEnd) return `${workStart} dan`;
+  return `${workStart} dan ${workEnd} gacha`;
 }
 
 function formatRole(role) {
@@ -556,8 +704,20 @@ const PERMISSION_OPTIONS = [
   { key: 'dashboard', labelKey: 'dashboard', descriptionKey: 'permissionDashboard' },
   { key: 'complaints', labelKey: 'complaints', descriptionKey: 'permissionComplaints' },
   { key: 'tracking', labelKey: 'tracking', descriptionKey: 'permissionTracking' },
+  { key: 'assistantAi', labelKey: 'assistantAi', descriptionKey: 'permissionAssistantAi' },
+  { key: 'module102', labelKey: 'module102', descriptionKey: 'permissionModule102' },
   { key: 'users', labelKey: 'users', descriptionKey: 'permissionUsers' },
-  { key: 'branches', labelKey: 'departmentsSources', descriptionKey: 'permissionBranches' },
+  { key: 'compensated', labelKey: 'compensatedLoads', descriptionKey: 'permissionCompensated' },
   { key: 'settings', labelKey: 'settings', descriptionKey: 'permissionSettings' },
-  { key: SETTINGS_MANAGE_KEY, labelKey: 'settingsManage', descriptionKey: 'permissionSettingsManage' },
 ].filter((item) => item.key === SETTINGS_MANAGE_KEY || ACCESS_KEYS.includes(item.key));
+
+const SETTINGS_PERMISSION_OPTIONS = [
+  { key: 'settings_profile', labelKey: 'profileSettings', descriptionKey: 'permissionSettingsProfile' },
+  { key: 'settings_users', labelKey: 'users', descriptionKey: 'permissionSettingsUsers' },
+  { key: 'settings_problem_types', labelKey: 'problemTypes', descriptionKey: 'permissionSettingsProblemTypes' },
+  { key: 'settings_departments', labelKey: 'departmentsTitle', descriptionKey: 'permissionSettingsDepartments' },
+  { key: 'settings_sources', labelKey: 'requestSources', descriptionKey: 'permissionSettingsSources' },
+  { key: 'settings_roles', labelKey: 'roles', descriptionKey: 'permissionSettingsRoles' },
+  { key: 'settings_assignments', labelKey: 'departmentAssignmentsTitle', descriptionKey: 'permissionSettingsAssignments' },
+  { key: SETTINGS_MANAGE_KEY, labelKey: 'settingsManage', descriptionKey: 'permissionSettingsManage' },
+];

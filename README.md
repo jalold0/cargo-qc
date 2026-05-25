@@ -1,6 +1,18 @@
 # Cargo QC
 
-Ichki sifat nazorati va murojaatlar bilan ishlash uchun yaratilgan operatsion panel. Tizim murojaatlarni qabul qilish, treklarni kuzatish, hodimlar samaradorligini ko'rish, bo'lim va manbalar kesimida ishlash hamda rahbar uchun oylik hisobot tayyorlashga mo'ljallangan.
+[![CI](https://github.com/jalold0/cargo-qc/actions/workflows/ci.yml/badge.svg)](https://github.com/jalold0/cargo-qc/actions/workflows/ci.yml)
+
+Ichki sifat nazorati va murojaatlar bilan ishlash uchun yaratilgan operatsion panel.
+
+## 🚀 Deploy
+
+Frontend Vercel'ga deploy qilish — telefon va boshqa qurilmalardan internet orqali kirish uchun:
+
+📖 **[DEPLOY.md](./DEPLOY.md)** — to'liq qadama-qadam yo'riqnoma (3 daqiqa)
+
+## 🗄️ Backend (Supabase)
+
+📖 **[server/SUPABASE_SETUP.md](./server/SUPABASE_SETUP.md)** — schema, RLS, env'lar bo'yicha yo'l-yo'riq Tizim murojaatlarni qabul qilish, treklarni kuzatish, hodimlar samaradorligini ko'rish, bo'lim va manbalar kesimida ishlash hamda rahbar uchun oylik hisobot tayyorlashga mo'ljallangan.
 
 ## Asosiy imkoniyatlar
 
@@ -35,20 +47,33 @@ Buyruqlar:
 
 ```bash
 npm install
+cp .env.example .env.local   # env'larni o'z qiymatlaringiz bilan to'ldiring
 npm run dev
 ```
 
-Build:
+Boshqa scriptlar:
 
 ```bash
-npm run build
+npm run build           # Production build
+npm run preview         # Build natijasini ko'rish
+npm run lint            # ESLint nazorat
+npm run lint:fix        # Avto-tuzatish
+npm run format          # Prettier bilan kodlarni formatlash
+npm run format:check    # Format tekshirish
+npm test                # Vitest unit testlari (CI rejim)
+npm run test:watch      # Vitest watch rejimi (development)
 ```
 
-Preview:
+## Environment
 
-```bash
-npm run preview
-```
+`.env.local` faylini `.env.example` asosida yarating. Asosiy o'zgaruvchilar:
+
+- `VITE_SUPABASE_URL` — Supabase loyiha URL (Realtime sync uchun)
+- `VITE_SUPABASE_ANON_KEY` — Supabase public anon key
+- `VITE_API_URL` — Backend API URL (kelajakda)
+- `VITE_SALES_API_URL` — Oylik sotuv ma'lumotlari endpoint
+
+Hozircha loyiha **localStorage rejimida** ishlaydi. Supabase env to'ldirilsa, Realtime sinxron faollashadi.
 
 ## Loyiha tuzilmasi
 

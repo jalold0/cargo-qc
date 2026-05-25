@@ -2,21 +2,26 @@ import { useEffect, useId, useMemo, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
-  ArrowDownRight,
   ArrowUpRight,
+  BriefcaseBusiness,
   CalendarDays,
   CheckCircle,
   Clock,
+  Clock3,
   CopyMinus,
   Download,
   FileText,
   Gauge,
   History,
   Maximize2,
-  Plus,
+  PackageSearch,
   RefreshCw,
   Search,
+  Share2,
   ShieldAlert,
+  ShieldCheck,
+  TrendingUp,
+  Users2,
   X,
 } from 'lucide-react';
 import {
@@ -36,13 +41,65 @@ import { uz } from 'date-fns/locale';
 import { Link } from 'react-router-dom';
 import { clsx } from 'clsx';
 import toast from 'react-hot-toast';
-import { getAllOtkRecords, getOtkAuditLogs, getOtkDashboardStats, getSystemUsers, getWaitingDays, subscribeToOtkData, toDateKey } from '../services/localData';
+import {
+  getAllOtkRecords,
+  getCompensatedLoadRegistry,
+  getOtkAuditLogs,
+  getOtkDashboardStats,
+  getOtkSettings,
+  getRecoveredCompensatedLoads,
+  getSystemUsers,
+  getWaitingDays,
+  subscribeToOtkData,
+  toDateKey,
+} from '../services/localData';
+import { buildDepartmentStatsAligned as buildUnifiedDepartmentStats } from '../services/departmentAnalytics';
 import { isAdminRole, isManagerRole } from '../services/access';
 import { exportMonthlyReportWorkbook } from '../services/monthlyReportExport';
+import {
+  calcProblemRatio,
+  classifyProblemRatio,
+  formatKg,
+  formatTracks,
+  getYearTotals,
+} from '../services/salesData';
 import { useAuthStore, useLanguageStore } from '../store/authStore';
 import { useT, useValueLabel } from '../i18n';
+import {
+  addMonths,
+  buildCalendarDays,
+  buildCompensatedBreakdown,
+  buildCompensatedOverview,
+  formatDateLabel,
+  formatMoneyShort,
+  formatMonthTitle,
+  getInitialMonth,
+  normalizeDashboardMoney,
+  normalizeDashboardText,
+  normalizeRange,
+} from './dashboard/utils';
+import {
+  ActivityRow,
+  DuplicateDetailField,
+  EmployeeMetric,
+  ExecutivePulse,
+  KpiMetricCard,
+  MiniKpiStat,
+  ProblemRatioCard,
+  ProgressRow,
+  RatioRow,
+  SalesStatCard,
+  SimpleRankList,
+  TrendBadge,
+} from './dashboard/cards';
+import {
+  MonthlyReportContent,
+  buildMonthlyReportShareText,
+} from './dashboard/MonthlyReport';
 
-const DEMO_DATA = {
+// DEMO_DATA faqat DEV rejimida ishlaydi (boshlang'ich ma'lumot yo'q holatda preview uchun).
+// Production buildda Vite tree-shake qiladi, lekin biz ham guard qo'shamiz.
+const DEMO_DATA = import.meta.env.DEV ? {
   summary: {
     today_total: 24,
     today_resolved: 17,
@@ -176,7 +233,7 @@ const DEMO_DATA = {
   operator_performance: [
     { id: 1, full_name: 'Operator', resolved: 38, total_assigned: 44, resolve_rate: 86 },
     { id: 2, full_name: 'Supervisor', resolved: 31, total_assigned: 39, resolve_rate: 79 },
-    { id: 3, full_name: 'Admin', resolved: 22, total_assigned: 26, resolve_rate: 85 },
+    { id: 3, full_name: 'Jaloldin Mirzakbarov', resolved: 22, total_assigned: 26, resolve_rate: 85 },
   ],
   branch_counts: [
     { branch_name: 'Chilonzor', total: 32, resolved: 24, in_progress: 8 },
@@ -199,7 +256,7 @@ const DEMO_DATA = {
       waitingDays: 4,
     },
   ],
-};
+} : null;
 
 const SUMMARY_CARDS = [
   {
@@ -250,12 +307,15 @@ const PRIORITY_BADGE = {
 };
 
 function shouldShowDemo(localStats, range) {
+  // Productionda DEMO_DATA umuman ko'rsatilmaydi
+  if (!DEMO_DATA) return false;
   const filterActive = Boolean(range.from || range.to);
   if (filterActive) return false;
   return !localStats.summary?.today_total && !localStats.active_count && !localStats.archived_count;
 }
 
 function buildDemoMonthlyTemplate(selectedYear) {
+  if (!DEMO_DATA) return null;
   const months = Array.from({ length: 12 }, (_, monthIndex) => ({ monthIndex }));
   const rows = (DEMO_DATA.monthly_report.rows || []).map((row) => ({
     ...row,
@@ -291,6 +351,7 @@ function buildDemoMonthlyTemplate(selectedYear) {
 
 function resolveDashboardStats(localStats, range, reportYear) {
   if (!shouldShowDemo(localStats, range)) return localStats;
+  if (!DEMO_DATA) return localStats;
 
   const selectedYear = Number(reportYear);
   if (Number.isFinite(selectedYear) && selectedYear !== DEMO_DATA.monthly_report.selectedYear) {
@@ -307,17 +368,31 @@ export default function DashboardPage() {
   const t = useT();
   const { user } = useAuthStore();
   const { language } = useLanguageStore();
+  const currentDate = new Date();
+  const currentYear = currentDate.getFullYear();
   const [dateRange, setDateRange] = useState({ from: '', to: '' });
   const [employeeModalOpen, setEmployeeModalOpen] = useState(false);
   const [problemTypesModalOpen, setProblemTypesModalOpen] = useState(false);
   const [requestSourcesModalOpen, setRequestSourcesModalOpen] = useState(false);
   const [activeTracksModalOpen, setActiveTracksModalOpen] = useState(false);
+  const [leaderPanelOpen, setLeaderPanelOpen] = useState(false);
+  const [departmentsModalOpen, setDepartmentsModalOpen] = useState(false);
+  const [compensatedControlModalOpen, setCompensatedControlModalOpen] = useState(false);
+  const [dashboardBreakdownView, setDashboardBreakdownView] = useState('problems');
   const [auditModalOpen, setAuditModalOpen] = useState(false);
   const [duplicateModalOpen, setDuplicateModalOpen] = useState(false);
+  const [duplicateDetailModalOpen, setDuplicateDetailModalOpen] = useState(false);
+  const [selectedDuplicateGroup, setSelectedDuplicateGroup] = useState(null);
   const [slaModalOpen, setSlaModalOpen] = useState(false);
+  const [departmentForecastModalOpen, setDepartmentForecastModalOpen] = useState(false);
+  const [departmentSelectedMonth, setDepartmentSelectedMonth] = useState(() => currentDate.getMonth());
+  const [departmentSelectedYear, setDepartmentSelectedYear] = useState(currentYear);
   const [employeeDateRange, setEmployeeDateRange] = useState({ from: '', to: '' });
   const [monthlyReportYear, setMonthlyReportYear] = useState('');
   const [allRecords, setAllRecords] = useState(() => getAllOtkRecords());
+  const [settings, setSettings] = useState(() => getOtkSettings());
+  const [compensatedRegistry, setCompensatedRegistry] = useState(() => getCompensatedLoadRegistry());
+  const [recoveredCompensatedLoads, setRecoveredCompensatedLoads] = useState(() => getRecoveredCompensatedLoads());
   const [systemUsers, setSystemUsers] = useState(() => getSystemUsers());
   const [auditLogs, setAuditLogs] = useState(() => getOtkAuditLogs());
   const [stats, setStats] = useState(() => {
@@ -327,7 +402,6 @@ export default function DashboardPage() {
   const [isFetching, setIsFetching] = useState(false);
   const valueLabel = useValueLabel();
   const isDemo = stats === DEMO_DATA;
-  const canCreateOrder = isAdminRole(user?.role) || isManagerRole(user?.role);
   const canViewLeaderKpi = isAdminRole(user?.role) || isManagerRole(user?.role);
   const {
     summary,
@@ -345,11 +419,27 @@ export default function DashboardPage() {
     monthly_report = {},
   } = stats;
   const employeeStats = useMemo(() => buildEmployeeStats(employeeDateRange, allRecords, systemUsers), [employeeDateRange, allRecords, systemUsers]);
+  const departmentStats = useMemo(
+    () => buildUnifiedDepartmentStats(allRecords, systemUsers, settings.problemTypes || [], departmentSelectedMonth, departmentSelectedYear),
+    [allRecords, systemUsers, settings.problemTypes, departmentSelectedMonth, departmentSelectedYear]
+  );
   const employeeTotals = useMemo(() => summarizeEmployees(employeeStats), [employeeStats]);
+  const compensatedOverview = useMemo(
+    () => buildCompensatedOverview(compensatedRegistry, recoveredCompensatedLoads),
+    [compensatedRegistry, recoveredCompensatedLoads]
+  );
   const fullTypeCounts = all_type_counts?.length ? all_type_counts : type_counts || [];
   const fullSourceCounts = all_source_counts?.length ? all_source_counts : source_counts || [];
   const sourceChartData = fullSourceCounts.filter((item) => item.count > 0);
   const reportMonthLabels = REPORT_MONTH_LABELS[language] || REPORT_MONTH_LABELS.uz;
+  const departmentMonthOptions = useMemo(
+    () => Array.from({ length: 12 }, (_, index) => ({ value: index, label: reportMonthLabels[index] || `Oy ${index + 1}` })),
+    [reportMonthLabels]
+  );
+  const departmentYearOptions = useMemo(
+    () => Array.from({ length: 6 }, (_, index) => currentYear - 2 + index),
+    [currentYear]
+  );
   const formatMonthLabel = (_year, monthIndex) => reportMonthLabels[monthIndex] || '-';
   const monthlyReportRows = monthly_report.rows || [];
   const monthlyReportYearOptions = monthly_report.availableYears?.length
@@ -382,11 +472,106 @@ export default function DashboardPage() {
       .sort((a, b) => b.waitingDays - a.waitingDays || new Date(a.date) - new Date(b.date)),
     [fullActiveEntries]
   );
+  const workspaceLaunchers = useMemo(() => {
+    const totalDepartmentIssues = (branch_counts || []).reduce((sum, item) => sum + (Number(item.total) || 0), 0);
+
+    return [
+      canViewLeaderKpi
+        ? {
+            key: 'leader',
+            title: t('leaderKpi'),
+            subtitle: t('leaderKpiSubtitle'),
+            metric: `${kpi.closeRate || 0}%`,
+            meta: `${t('overdue')}: ${summary?.overdue || 0}`,
+            icon: Gauge,
+            tone: 'blue',
+            onClick: () => setLeaderPanelOpen(true),
+          }
+        : null,
+      {
+        key: 'monthly',
+        title: t('monthlyReport'),
+        subtitle: t('monthlyReportSubtitle'),
+        metric: Number(monthly_report.totalRecords || 0).toLocaleString('ru-RU'),
+        meta: `${t('lastActiveMonthLabel')}: ${monthlyReportLatestLabel}`,
+        icon: CalendarDays,
+        tone: 'indigo',
+        onClick: () => setActiveTracksModalOpen(true),
+      },
+      {
+        key: 'employees',
+        title: t('employeePerformance'),
+        subtitle: t('employeePerformanceSubtitle'),
+        metric: Number(employeeTotals.total || 0).toLocaleString('ru-RU'),
+        meta: `${employeeStats.length} ${t('employee').toLowerCase()}`,
+        icon: CheckCircle,
+        tone: 'amber',
+        onClick: () => setEmployeeModalOpen(true),
+      },
+      {
+        key: 'departments',
+        title: t('responsibleDepartment'),
+        subtitle: t('departmentSubtitle'),
+        metric: Number(totalDepartmentIssues || 0).toLocaleString('ru-RU'),
+        meta: `${branch_counts?.length || 0} ${t('departmentsSources').toLowerCase()}`,
+        icon: ShieldAlert,
+        tone: 'rose',
+        onClick: () => setDepartmentsModalOpen(true),
+      },
+      {
+        key: 'compensated-control',
+        title: t('compensatedControlTitle'),
+        subtitle: t('compensatedControlSubtitle'),
+        metric: Number(compensatedOverview.totalCompensated || 0).toLocaleString('ru-RU'),
+        meta: `${t('foundAt')}: ${compensatedOverview.recoveredCount} • ${t('statusInProgress')}: ${compensatedOverview.inProgressCount} • ${formatMoneyShort(compensatedOverview.paymentTotal)}`,
+        icon: BriefcaseBusiness,
+        tone: 'emerald',
+        onClick: () => setCompensatedControlModalOpen(true),
+      },
+    ]
+      .filter(Boolean)
+      .map((item) => (
+        item.key === 'compensated-control'
+          ? {
+              ...item,
+              meta: (
+                <div className="space-y-1.5">
+                  <div>{t('compensatedRecovered')}: {compensatedOverview.recoveredCount}</div>
+                  <div>{t('statusInProgress')}: {compensatedOverview.inProgressCount}</div>
+                  <div>{t('compensatedTotalAmount')}: {formatMoneyShort(compensatedOverview.paymentTotal)}</div>
+                </div>
+              ),
+            }
+          : item
+      ));
+  }, [
+    branch_counts,
+    canViewLeaderKpi,
+    compensatedOverview.inProgressCount,
+    compensatedOverview.paymentTotal,
+    compensatedOverview.recoveredCount,
+    compensatedOverview.totalCompensated,
+    employeeStats.length,
+    employeeTotals.total,
+    kpi.closeRate,
+    monthly_report.totalRecords,
+    monthlyReportLatestLabel,
+    summary?.overdue,
+    t,
+  ]);
+
+  const openDuplicateGroupDetails = (group) => {
+    setSelectedDuplicateGroup(group);
+    setDuplicateDetailModalOpen(true);
+  };
 
   useEffect(() => {
     const syncDashboard = () => {
       const localStats = getOtkDashboardStats(dateRange, { reportYear: monthlyReportYear });
       setAllRecords(getAllOtkRecords());
+      setSettings(getOtkSettings());
+      setCompensatedRegistry(getCompensatedLoadRegistry());
+      setRecoveredCompensatedLoads(getRecoveredCompensatedLoads());
       setSystemUsers(getSystemUsers());
       setAuditLogs(getOtkAuditLogs());
       setStats(resolveDashboardStats(localStats, dateRange, monthlyReportYear));
@@ -399,6 +584,9 @@ export default function DashboardPage() {
     setIsFetching(true);
     const localStats = getOtkDashboardStats(dateRange, { reportYear: monthlyReportYear });
     setAllRecords(getAllOtkRecords());
+    setSettings(getOtkSettings());
+    setCompensatedRegistry(getCompensatedLoadRegistry());
+    setRecoveredCompensatedLoads(getRecoveredCompensatedLoads());
     setSystemUsers(getSystemUsers());
     setAuditLogs(getOtkAuditLogs());
     setStats(resolveDashboardStats(localStats, dateRange, monthlyReportYear));
@@ -435,11 +623,46 @@ export default function DashboardPage() {
     }
   };
 
+  const shareMonthlyReport = async () => {
+    try {
+      const shareText = buildMonthlyReportShareText({
+        report: monthly_report,
+        t,
+        periodLabel: monthlyReportPeriodLabel,
+        latestLabel: monthlyReportLatestLabel,
+      });
+
+      if (navigator.share) {
+        await navigator.share({
+          title: `${t('monthlyReport')} ${monthly_report.selectedYear || monthlyReportYear || ''}`.trim(),
+          text: shareText,
+          url: window.location.href,
+        });
+        toast.success(t('shareMonthlyReportSuccess'));
+        return;
+      }
+
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(shareText);
+        toast.success(t('shareMonthlyReportCopied'));
+        return;
+      }
+
+      toast.error(t('shareMonthlyReportFailed'));
+    } catch (error) {
+      if (error?.name === 'AbortError') return;
+      console.error('Monthly report share failed', error);
+      toast.error(t('shareMonthlyReportFailed'));
+    }
+  };
+
   const applyDateFilter = (nextRange) => {
     setDateRange(nextRange);
     setIsFetching(true);
     const localStats = getOtkDashboardStats(nextRange, { reportYear: monthlyReportYear });
     setAllRecords(getAllOtkRecords());
+    setCompensatedRegistry(getCompensatedLoadRegistry());
+    setRecoveredCompensatedLoads(getRecoveredCompensatedLoads());
     setSystemUsers(getSystemUsers());
     setAuditLogs(getOtkAuditLogs());
     setStats(resolveDashboardStats(localStats, nextRange, monthlyReportYear));
@@ -451,100 +674,335 @@ export default function DashboardPage() {
     setIsFetching(true);
     const localStats = getOtkDashboardStats(dateRange, { reportYear: year });
     setAllRecords(getAllOtkRecords());
+    setCompensatedRegistry(getCompensatedLoadRegistry());
+    setRecoveredCompensatedLoads(getRecoveredCompensatedLoads());
     setSystemUsers(getSystemUsers());
     setAuditLogs(getOtkAuditLogs());
     setStats(resolveDashboardStats(localStats, dateRange, year));
     window.setTimeout(() => setIsFetching(false), 250);
   };
 
-  const trendData = (weekly_trend || []).map((d) => ({
-    name: format(new Date(d.date), 'dd MMM', { locale: uz }),
-    Jami: Number(d.total),
-    Yopildi: Number(d.resolved),
+  const trendData = monthlyReportMonths.map((month, index) => ({
+    name: month.label,
+    Jami: Number(monthly_report.totals?.[index]?.count || 0),
+    Trend: Number(monthly_report.totals?.[index]?.trend?.percent ?? 0),
   }));
+  const latestMonthTotal = monthly_report.latestMonth != null
+    ? Number(monthly_report.totals?.find((month) => month.monthIndex === monthly_report.latestMonth)?.count || 0)
+    : 0;
+  const averageMonthlyLoad = trendData.length
+    ? Math.round(trendData.reduce((sum, item) => sum + (item.Jami || 0), 0) / trendData.length)
+    : 0;
 
   return (
-    <div className="space-y-5 animate-fade-in">
-      <section className="qc-panel relative z-50 rounded-2xl">
-        <div className="grid gap-5 p-5 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
-          <div>
-            <div className="mb-3 inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600 ring-1 ring-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700">
-              <span className="h-2 w-2 rounded-full bg-emerald-500" />
-              {canViewLeaderKpi ? t('executiveOverview') : t('operationsPanel')}
+    <div className="space-y-3 animate-fade-in">
+      {/* ======== PROFESSIONAL HEADER — kompakt va clean ======== */}
+      <section className="relative z-[120] overflow-hidden rounded-2xl border border-slate-200 bg-gradient-to-br from-white via-white to-blue-50/40 shadow-sm dark:border-slate-800 dark:from-slate-900 dark:via-slate-900 dark:to-blue-500/5">
+        {/* Decorative gradient blob */}
+        <div className="pointer-events-none absolute -right-20 -top-20 h-64 w-64 rounded-full bg-gradient-to-br from-blue-400/15 via-cyan-400/10 to-emerald-400/10 blur-3xl" />
+        <div className="pointer-events-none absolute -left-10 -bottom-10 h-40 w-40 rounded-full bg-gradient-to-tr from-violet-400/10 to-pink-400/10 blur-2xl" />
+
+        <div className="relative flex flex-wrap items-center gap-4 p-4">
+          <div className="flex items-center gap-3">
+            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-600 via-indigo-600 to-violet-600 text-white shadow-lg shadow-blue-500/30">
+              <Gauge size={22} />
             </div>
-            <h1 className="text-2xl font-semibold tracking-tight text-slate-950 dark:text-white md:text-3xl">
-              {t('overview')}
-            </h1>
-            <p className="mt-2 max-w-2xl text-sm text-slate-500 dark:text-slate-400">
-              {format(new Date(), 'dd MMMM yyyy, EEEE', { locale: uz })}. {canViewLeaderKpi ? t('dashboardExecutiveSubtitle') : t('dashboardSubtitle')}
-            </p>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="text-xl font-bold tracking-tight text-slate-950 dark:text-white">
+                  {t('overview')}
+                </h1>
+                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-300 dark:ring-emerald-500/30">
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
+                  {canViewLeaderKpi ? t('executiveOverview') : t('operationsPanel')}
+                </span>
+              </div>
+              <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                <span className="font-semibold capitalize">{format(new Date(), 'dd MMMM yyyy, EEEE', { locale: uz })}</span>
+                <span className="mx-1.5 opacity-50">·</span>
+                {canViewLeaderKpi ? t('dashboardExecutiveSubtitle') : t('dashboardSubtitle')}
+              </p>
+            </div>
           </div>
 
-          <div className="space-y-3">
-            {canViewLeaderKpi && (
-              <div className="grid gap-2 sm:grid-cols-3">
-                <ExecutivePulse label={t('resolvedItems')} value={`${summary?.today_resolved || 0}/${summary?.today_total || 0}`} tone="emerald" />
-                <ExecutivePulse label={t('overdue')} value={summary?.overdue || 0} tone="rose" />
-                <ExecutivePulse label={t('duplicateRisk')} value={kpi.duplicateGroups || 0} tone="slate" />
-              </div>
+          <div className="ml-auto flex flex-wrap items-center gap-1.5">
+            {isDemo && (
+              <span className="inline-flex items-center gap-1 rounded-lg bg-amber-100 px-2 py-1 text-[11px] font-bold text-amber-700 ring-1 ring-amber-200 dark:bg-amber-500/15 dark:text-amber-300">
+                ⚠ {t('demoData')}
+              </span>
             )}
-            <div className="flex flex-wrap gap-2 xl:justify-end">
-              {isDemo && (
-                <span className="inline-flex items-center rounded-lg bg-amber-50 px-3 py-2 text-sm font-medium text-amber-700 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-500/20">
-                  {t('demoData')}
-                </span>
-              )}
-              <DateRangeFilter
-                value={dateRange}
-                onChange={applyDateFilter}
-                label={t('dateFilter')}
-              />
-              <button
-                onClick={refetch}
-                disabled={isFetching}
-                className="qc-button inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition disabled:opacity-60"
-              >
-                <RefreshCw size={16} className={isFetching ? 'animate-spin' : ''} />
-                {t('refresh')}
-              </button>
-              {canCreateOrder && (
-                <Link
-                  to="/complaints/new"
-                  className="qc-primary inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition"
-                >
-                  <Plus size={16} />
-                  {t('newComplaint')}
-                </Link>
-              )}
-            </div>
+            <DateRangeFilter
+              value={dateRange}
+              onChange={applyDateFilter}
+              label={t('dateFilter')}
+            />
+            <button
+              onClick={refetch}
+              disabled={isFetching}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+            >
+              <RefreshCw size={13} className={isFetching ? 'animate-spin' : ''} />
+              {t('refresh')}
+            </button>
           </div>
         </div>
       </section>
 
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      {/* ======== SUMMARY KPI CARDS — professional 4 cards ======== */}
+      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {SUMMARY_CARDS.map(({ key, labelKey, subKey, icon: Icon, tone, badge }) => (
           <div
             key={key}
-            className="qc-soft-card rounded-2xl p-4 transition hover:-translate-y-0.5 hover:shadow-[0_16px_34px_rgba(15,23,42,0.08)]"
+            className="group relative overflow-hidden rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:border-blue-200 hover:shadow-lg dark:border-slate-800 dark:bg-slate-900 dark:hover:border-blue-500/30"
           >
-            <div className={clsx('mb-4 h-1.5 rounded-full bg-gradient-to-r', tone)} />
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-sm font-medium text-slate-500 dark:text-slate-400">{t(labelKey)}</p>
-                <p className="mt-3 text-3xl font-semibold tracking-tight text-slate-950 dark:text-white">
-                  {summary?.[key] || 0}
-                </p>
+            {/* Background gradient blob */}
+            <div className={clsx('pointer-events-none absolute -right-8 -top-8 h-32 w-32 rounded-full bg-gradient-to-br opacity-15 blur-xl transition-opacity group-hover:opacity-25', tone)} />
+
+            {/* Top accent bar */}
+            <div className={clsx('absolute left-0 right-0 top-0 h-1 bg-gradient-to-r transition-all group-hover:h-1.5', tone)} />
+
+            <div className="relative">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                    {t(labelKey)}
+                  </p>
+                  <p className="mt-2 text-3xl font-extrabold tracking-tight text-slate-950 transition-transform duration-300 group-hover:translate-x-0.5 dark:text-white">
+                    {(summary?.[key] || 0).toLocaleString('ru-RU')}
+                  </p>
+                </div>
+                <div className={clsx('shrink-0 rounded-xl bg-gradient-to-br p-2.5 text-white shadow-md transition-all duration-300 group-hover:scale-110 group-hover:rotate-3', tone)}>
+                  <Icon size={18} />
+                </div>
               </div>
-              <div className={clsx('rounded-xl bg-gradient-to-br p-2.5 text-white shadow-[0_10px_20px_rgba(15,23,42,0.14)]', tone)}>
-                <Icon size={20} />
+              <div className={clsx('mt-3 inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold transition-transform duration-300 group-hover:translate-x-0.5', badge)}>
+                {t(subKey)}
               </div>
             </div>
-            <div className={clsx('mt-4 inline-flex rounded-full px-2.5 py-1 text-xs font-medium', badge)}>{t(subKey)}</div>
           </div>
         ))}
       </section>
 
-      {canViewLeaderKpi && (
+      <section className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+        <Panel
+          title={t('monthlyDynamics')}
+          subtitle={t('monthlyDynamicsSubtitle')}
+          actions={(
+            <div className="min-w-[150px]">
+              <DashboardSelect
+                value={monthlyReportYear || String(monthly_report.selectedYear || monthlyReportYearOptions[0])}
+                onChange={applyMonthlyReportYear}
+                options={monthlyReportYearOptions}
+                labels={Object.fromEntries(monthlyReportYearOptions.map((year) => [year, `${t('monthlyReportYear')}: ${year}`]))}
+              />
+            </div>
+          )}
+        >
+          <ResponsiveContainer width="100%" height={200}>
+            <AreaChart data={trendData} margin={{ top: 10, right: 12, left: -18, bottom: 0 }}>
+              <defs>
+                <linearGradient id="total-compact" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#2563eb" stopOpacity={0.24} />
+                  <stop offset="95%" stopColor="#2563eb" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="#dbeafe" vertical={false} />
+              <XAxis dataKey="name" tick={{ fontSize: 12, fill: '#64748b' }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fontSize: 12, fill: '#64748b' }} axisLine={false} tickLine={false} />
+              <Tooltip />
+              <Area type="monotone" dataKey="Jami" stroke="#2563eb" strokeWidth={2.6} fill="url(#total-compact)" />
+            </AreaChart>
+          </ResponsiveContainer>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <MiniKpiStat label={t('lastActiveMonthLabel')} value={latestMonthTotal} tone="sky" />
+            <MiniKpiStat label={t('monthlyAverageLabel')} value={averageMonthlyLoad} tone="rose" />
+          </div>
+        </Panel>
+
+        <Panel
+          title={dashboardBreakdownView === 'problems' ? t('problemTypes') : t('requestSources')}
+          subtitle={dashboardBreakdownView === 'problems' ? t('last30Days') : t('requestSourcesSubtitle')}
+          onHeaderClick={() => (dashboardBreakdownView === 'problems' ? setProblemTypesModalOpen(true) : setRequestSourcesModalOpen(true))}
+          actionLabel={t('expand')}
+          actions={(
+            <div className="inline-flex rounded-xl border border-slate-200 bg-slate-50 p-1 dark:border-slate-800 dark:bg-slate-950">
+              <button
+                type="button"
+                onClick={() => setDashboardBreakdownView('problems')}
+                className={clsx(
+                  'rounded-lg px-3 py-1.5 text-xs font-semibold transition',
+                  dashboardBreakdownView === 'problems'
+                    ? 'bg-white text-blue-700 shadow-sm ring-1 ring-slate-200 dark:bg-slate-900 dark:text-blue-300 dark:ring-slate-700'
+                    : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
+                )}
+              >
+                {t('problemTypes')}
+              </button>
+              <button
+                type="button"
+                onClick={() => setDashboardBreakdownView('sources')}
+                className={clsx(
+                  'rounded-lg px-3 py-1.5 text-xs font-semibold transition',
+                  dashboardBreakdownView === 'sources'
+                    ? 'bg-white text-blue-700 shadow-sm ring-1 ring-slate-200 dark:bg-slate-900 dark:text-blue-300 dark:ring-slate-700'
+                    : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
+                )}
+              >
+                {t('requestSources')}
+              </button>
+            </div>
+          )}
+        >
+          <ResponsiveContainer width="100%" height={170}>
+            <PieChart>
+              <Pie data={dashboardBreakdownView === 'problems' ? type_counts || [] : sourceChartData || []} dataKey="count" nameKey="name" innerRadius={52} outerRadius={84} paddingAngle={3}>
+                {(dashboardBreakdownView === 'problems' ? type_counts || [] : sourceChartData || []).map((_, i) => (
+                  <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+                ))}
+              </Pie>
+              <Tooltip />
+            </PieChart>
+          </ResponsiveContainer>
+          <div className="space-y-2">
+            {(dashboardBreakdownView === 'problems' ? type_counts || [] : sourceChartData || []).map((item, i) => (
+              <div key={item.name} className="flex items-center justify-between text-sm">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
+                  <span className="truncate text-slate-600 dark:text-slate-300">{item.name}</span>
+                </div>
+                <span className="font-semibold text-slate-950 dark:text-white">{item.count}</span>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      </section>
+
+      <section>
+        <Panel
+          title={canViewLeaderKpi ? t('executiveOverview') : t('operationsPanel')}
+          subtitle={canViewLeaderKpi ? t('dashboardExecutiveSubtitle') : t('dashboardSubtitle')}
+        >
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5">
+              {workspaceLaunchers.map((item) => (
+                <WorkspaceLauncherCard
+                  key={item.key}
+                  title={item.title}
+                  subtitle={item.subtitle}
+                  metric={item.metric}
+                  meta={item.meta}
+                  tone={item.tone}
+                  icon={item.icon}
+                  onClick={item.onClick}
+                  actionLabel={t('expand')}
+                />
+              ))}
+          </div>
+
+          {canViewLeaderKpi ? (
+            <div className="mt-4 space-y-4">
+              <div className="rounded-2xl border border-slate-200/80 bg-slate-50/85 p-4 dark:border-slate-800 dark:bg-slate-950/50">
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                  <div>
+                    <div className="inline-flex items-center gap-2 rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-600 ring-1 ring-slate-200 dark:bg-slate-900 dark:text-slate-300 dark:ring-slate-700">
+                      <Activity size={14} />
+                      {t('departmentMonthlyFlow')}
+                    </div>
+                    <p className="mt-2 text-sm leading-6 text-slate-500 dark:text-slate-400">
+                      Bu filtr faqat quyidagi rahbar statistikasi uchun ishlaydi.
+                    </p>
+                  </div>
+
+                  <div className="grid w-full gap-3 sm:grid-cols-2 lg:w-auto lg:min-w-[420px]">
+                    <div>
+                      <label className="mb-1.5 block text-sm font-medium text-slate-500 dark:text-slate-400">
+                        {t('monthFilter')}
+                      </label>
+                      <select
+                        value={departmentSelectedMonth}
+                        onChange={(event) => setDepartmentSelectedMonth(Number(event.target.value))}
+                        className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 outline-none transition focus:border-blue-300 focus:ring-4 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-blue-500 dark:focus:ring-blue-500/20"
+                      >
+                        {departmentMonthOptions.map((month) => (
+                          <option key={month.value} value={month.value}>
+                            {month.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="mb-1.5 block text-sm font-medium text-slate-500 dark:text-slate-400">
+                        {t('yearFilter')}
+                      </label>
+                      <select
+                        value={departmentSelectedYear}
+                        onChange={(event) => setDepartmentSelectedYear(Number(event.target.value))}
+                        className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 outline-none transition focus:border-blue-300 focus:ring-4 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-blue-500 dark:focus:ring-blue-500/20"
+                      >
+                        {departmentYearOptions.map((year) => (
+                          <option key={year} value={year}>
+                            {year}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
+                <CompactDepartmentStatCard
+                  tone="blue"
+                  icon={ShieldCheck}
+                  title={t('departmentCoreShare')}
+                  value={`${departmentStats.coreShare}%`}
+                  meta={`${departmentStats.coreTrackCount.toLocaleString('ru-RU')} ${t('tracksShort')} asosiy oqimda`}
+                />
+                <CompactDepartmentStatCard
+                  tone="violet"
+                  icon={BriefcaseBusiness}
+                  title={t('departmentExtraShare')}
+                  value={`${departmentStats.extraShare}%`}
+                  meta={`${departmentStats.extraTrackCount.toLocaleString('ru-RU')} ${t('tracksShort')} qo'shimcha ishda`}
+                />
+                <CompactDepartmentStatCard
+                  tone="emerald"
+                  icon={Activity}
+                  title={t('departmentMonthlyFlow')}
+                  value={departmentStats.monthlyTracks.toLocaleString('ru-RU')}
+                  meta={`${departmentStats.monthLabel} ${t('departmentMonthlyMeta')}`}
+                />
+                <CompactDepartmentStatCard
+                  tone="amber"
+                  icon={Users2}
+                  title={t('departmentEmployeeDailyFlow')}
+                  value={`${departmentStats.leaderDailyFlow} ${t('tracksShort')}`}
+                  meta={departmentStats.employeeFlowMeta}
+                />
+                <CompactDepartmentStatCard
+                  tone="rose"
+                  icon={Clock3}
+                  title={t('departmentEstimatedTime')}
+                  value={departmentStats.estimatedDailyTime}
+                  meta={departmentStats.employeeTimeMeta}
+                />
+                <CompactDepartmentStatCard
+                  tone="indigo"
+                  icon={TrendingUp}
+                  title={t('departmentForecastTitle')}
+                  value={`${departmentStats.nextMonthForecast.toLocaleString('ru-RU')} ${t('tracksShort')}`}
+                  meta={departmentStats.forecastMeta}
+                  badgeText={`${formatSignedPercent(departmentStats.nextMonthChangePct)} ${t('vsCurrentMonth')}`}
+                  badgeTone={getForecastBadgeTone(departmentStats.nextMonthChangePct)}
+                  actionLabel={t('expand')}
+                  onAction={() => setDepartmentForecastModalOpen(true)}
+                />
+              </div>
+            </div>
+          ) : null}
+        </Panel>
+      </section>
+
+      {false && canViewLeaderKpi && (
         <section className="grid gap-4 xl:grid-cols-[1.25fr_0.75fr]">
           <Panel title={t('leaderKpi')} subtitle={t('leaderKpiSubtitle')}>
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
@@ -709,21 +1167,41 @@ export default function DashboardPage() {
         </section>
       )}
 
-      {auditModalOpen && (
+      {leaderPanelOpen && (
         <InsightModal
-          title={t('recentActivity')}
-          subtitle={t('recentActivitySubtitle')}
-          onClose={() => setAuditModalOpen(false)}
+          title={t('leaderKpi')}
+          subtitle={t('leaderKpiSubtitle')}
+          onClose={() => setLeaderPanelOpen(false)}
         >
-          <div className="space-y-3">
-            {auditLogs.length ? auditLogs.map((item) => (
-              <ActivityRow key={item.id} item={item} />
-            )) : (
-              <p className="rounded-xl border border-dashed border-slate-200 px-4 py-8 text-center text-sm text-slate-400 dark:border-slate-800">
-                {t('noActivityYet')}
-              </p>
-            )}
-          </div>
+          <LeaderKpiContent
+            t={t}
+            kpi={kpi}
+            summary={summary}
+            recentActivity={recent_activity}
+            onOpenSla={() => setSlaModalOpen(true)}
+            onOpenRecentActivity={() => setAuditModalOpen(true)}
+            onOpenDuplicates={() => setDuplicateModalOpen(true)}
+          />
+        </InsightModal>
+      )}
+
+      {departmentsModalOpen && (
+        <InsightModal
+          title={t('responsibleDepartment')}
+          subtitle={t('departmentSubtitle')}
+          onClose={() => setDepartmentsModalOpen(false)}
+        >
+          <DepartmentOverviewContent items={branch_counts || []} />
+        </InsightModal>
+      )}
+
+      {compensatedControlModalOpen && (
+        <InsightModal
+          title={t('compensatedControlTitle')}
+          subtitle={t('compensatedControlSubtitle')}
+          onClose={() => setCompensatedControlModalOpen(false)}
+        >
+          <CompensatedControlContent t={t} overview={compensatedOverview} valueLabel={valueLabel} />
         </InsightModal>
       )}
 
@@ -731,13 +1209,33 @@ export default function DashboardPage() {
         <InsightModal
           title={t('duplicateExamples')}
           subtitle={t('duplicateModalSubtitle')}
-          onClose={() => setDuplicateModalOpen(false)}
+          onClose={() => {
+            setDuplicateModalOpen(false);
+            setSelectedDuplicateGroup(null);
+            setDuplicateDetailModalOpen(false);
+          }}
         >
           <div className="space-y-3">
             {duplicateGroups.length ? duplicateGroups.map((item) => (
-              <div key={item.trackCode} className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+              <div
+                key={item.trackCode}
+                role="button"
+                tabIndex={0}
+                onClick={() => openDuplicateGroupDetails(item)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    openDuplicateGroupDetails(item);
+                  }
+                }}
+                className="w-full rounded-2xl border border-slate-200 bg-white p-4 text-left transition hover:border-blue-200 hover:bg-blue-50/40 dark:border-slate-800 dark:bg-slate-900 dark:hover:border-blue-500/30 dark:hover:bg-blue-500/5"
+              >
                 <div className="flex items-center justify-between gap-3">
-                  <Link to={`/tracking?search=${encodeURIComponent(item.trackCode)}`} className="font-mono text-sm font-semibold text-slate-950 transition hover:text-blue-600 dark:text-white dark:hover:text-blue-300">
+                  <Link
+                    to={`/tracking?search=${encodeURIComponent(item.trackCode)}`}
+                    onClick={(event) => event.stopPropagation()}
+                    className="font-mono text-sm font-semibold text-slate-950 transition hover:text-blue-600 dark:text-white dark:hover:text-blue-300"
+                  >
                     {item.trackCode}
                   </Link>
                   <span className="rounded-full bg-rose-50 px-2.5 py-1 text-xs font-semibold text-rose-700 ring-1 ring-rose-200 dark:bg-rose-500/10 dark:text-rose-300 dark:ring-rose-500/20">
@@ -755,6 +1253,54 @@ export default function DashboardPage() {
                 {t('noDuplicateRisk')}
               </p>
             )}
+          </div>
+        </InsightModal>
+      )}
+
+      {duplicateDetailModalOpen && selectedDuplicateGroup && (
+        <InsightModal
+          title={selectedDuplicateGroup.trackCode}
+          subtitle={`${selectedDuplicateGroup.count}x ${t('duplicateRecordsLabel')}`}
+          onClose={() => {
+            setDuplicateDetailModalOpen(false);
+            setSelectedDuplicateGroup(null);
+          }}
+        >
+          <div className="space-y-3">
+            {selectedDuplicateGroup.entries
+              .slice()
+              .sort((left, right) => resolveEntrySortTime(left) - resolveEntrySortTime(right))
+              .map((entry) => (
+                <div key={entry.id} className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0">
+                      <Link to={`/complaints/${entry.id}`} className="font-mono text-sm font-semibold text-slate-950 transition hover:text-blue-600 dark:text-white dark:hover:text-blue-300">
+                        {entry.trackCode}
+                      </Link>
+                      <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                        {format(new Date(entry.date), 'dd.MM.yyyy HH:mm')}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600 ring-1 ring-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700">
+                        {entry.status || '-'}
+                      </span>
+                      <span className={clsx('rounded-full px-2.5 py-1 text-xs font-semibold ring-1', PRIORITY_BADGE[entry.priority] || PRIORITY_BADGE.Past)}>
+                        {entry.priority || '-'}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="mt-4 grid gap-3 md:grid-cols-2">
+                    <DuplicateDetailField label={t('problemType')} value={entry.problemType} />
+                    <DuplicateDetailField label={t('responsibleDepartment')} value={entry.department} />
+                    <DuplicateDetailField label={t('requestSource')} value={entry.requestSource} />
+                    <DuplicateDetailField label={t('employee')} value={entry.handledBy || entry.createdBy || entry.lastUpdatedBy} />
+                  </div>
+                  <div className="mt-3 rounded-xl bg-slate-50 px-3 py-3 text-sm text-slate-600 ring-1 ring-slate-200 dark:bg-slate-950/60 dark:text-slate-300 dark:ring-slate-800">
+                    {entry.comment || '-'}
+                  </div>
+                </div>
+              ))}
           </div>
         </InsightModal>
       )}
@@ -798,6 +1344,35 @@ export default function DashboardPage() {
         </InsightModal>
       )}
 
+      {departmentForecastModalOpen && (
+        <InsightModal
+          title={t('departmentForecastTitle')}
+          subtitle={t('departmentForecastSubtitle')}
+          onClose={() => setDepartmentForecastModalOpen(false)}
+        >
+          <DepartmentForecastInsight t={t} stats={departmentStats} />
+        </InsightModal>
+      )}
+
+      {auditModalOpen && (
+        <InsightModal
+          title={t('recentActivity')}
+          subtitle={t('recentActivitySubtitle')}
+          onClose={() => setAuditModalOpen(false)}
+        >
+          <div className="space-y-3">
+            {auditLogs.length ? auditLogs.map((item) => (
+              <ActivityRow key={item.id} item={item} />
+            )) : (
+              <p className="rounded-xl border border-dashed border-slate-200 px-4 py-8 text-center text-sm text-slate-400 dark:border-slate-800">
+                {t('noActivityYet')}
+              </p>
+            )}
+          </div>
+        </InsightModal>
+      )}
+
+      {false && (
       <section className="grid gap-4 xl:grid-cols-3">
         <Panel className="xl:col-span-2" title={t('weeklyTrend')} subtitle={t('weeklyTrendSubtitle')}>
           <ResponsiveContainer width="100%" height={280}>
@@ -851,6 +1426,7 @@ export default function DashboardPage() {
           </div>
         </Panel>
       </section>
+      )}
 
       {problemTypesModalOpen && (
         <div className="fixed inset-0 z-[500] flex items-center justify-center bg-slate-950/60 p-4">
@@ -922,6 +1498,7 @@ export default function DashboardPage() {
         </div>
       )}
 
+      {false && (
       <section className="grid gap-4 lg:grid-cols-2">
         <Panel
           title={t('requestSources')}
@@ -967,6 +1544,7 @@ export default function DashboardPage() {
           </div>
         </Panel>
       </section>
+      )}
 
       {requestSourcesModalOpen && (
         <div className="fixed inset-0 z-[500] flex items-center justify-center bg-slate-950/60 p-4">
@@ -1086,6 +1664,10 @@ export default function DashboardPage() {
                         <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('resolved')}</th>
                         <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('inProgress')}</th>
                         <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">5+ kun</th>
+                        <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('workSchedule')}</th>
+                        <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('workload')}</th>
+                        <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('norm')}</th>
+                        <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('efficiency')}</th>
                         <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('result')}</th>
                       </tr>
                     </thead>
@@ -1107,12 +1689,29 @@ export default function DashboardPage() {
                           <td className="px-4 py-3 text-emerald-700 dark:text-emerald-300">{employee.resolved}</td>
                           <td className="px-4 py-3 text-amber-700 dark:text-amber-300">{employee.active}</td>
                           <td className="px-4 py-3 text-rose-700 dark:text-rose-300">{employee.highRisk}</td>
+                          <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{employee.workScheduleLabel}</td>
+                          <td className="px-4 py-3 text-slate-700 dark:text-slate-200">{formatAlignedDepartmentDuration(employee.totalMinutes)}</td>
+                          <td className="px-4 py-3 text-slate-700 dark:text-slate-200">
+                            {employee.capacityMinutes ? `${employee.normTracks} trek / ${formatAlignedDepartmentDuration(employee.capacityMinutes)}` : '-'}
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className={clsx(
+                              'inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ring-1',
+                              employee.efficiencyRate >= 85
+                                ? PRIORITY_BADGE.Past
+                                : employee.efficiencyRate >= 60
+                                  ? PRIORITY_BADGE["O'rta"]
+                                  : PRIORITY_BADGE.Yuqori
+                            )}>
+                              {employee.efficiencyRate}%
+                            </span>
+                          </td>
                           <td className="px-4 py-3">
                             <div className="flex items-center gap-3">
                               <div className="h-2 w-28 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
-                                <div className="h-full rounded-full bg-emerald-500" style={{ width: `${employee.resolve_rate}%` }} />
+                                <div className="h-full rounded-full bg-emerald-500" style={{ width: `${Math.min(employee.efficiencyRate || 0, 100)}%` }} />
                               </div>
-                              <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">{employee.resolve_rate}%</span>
+                              <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">{employee.efficiencyRate}%</span>
                             </div>
                           </td>
                         </tr>
@@ -1187,6 +1786,13 @@ export default function DashboardPage() {
                   />
                 </div>
                 <button
+                  onClick={shareMonthlyReport}
+                  className="qc-button inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium transition"
+                >
+                  <Share2 size={15} />
+                  {t('shareMonthlyReport')}
+                </button>
+                <button
                   onClick={exportMonthlyReport}
                   className="qc-button inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium transition"
                 >
@@ -1217,58 +1823,388 @@ export default function DashboardPage() {
         </div>
       )}
 
-      <Panel title={t('responsibleDepartment')} subtitle={t('departmentSubtitle')}>
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          {(branch_counts || []).map((item) => (
-            <DepartmentCard key={item.branch_name} item={item} />
-          ))}
-        </div>
-      </Panel>
+      {false && (
+        <>
+          <Panel title={t('responsibleDepartment')} subtitle={t('departmentSubtitle')}>
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              {(branch_counts || []).map((item) => (
+                <DepartmentCard key={item.branch_name} item={item} />
+              ))}
+            </div>
+          </Panel>
 
-      <Panel
-        title={t('monthlyReport')}
-        subtitle={t('monthlyReportSubtitle')}
-        onHeaderClick={() => setActiveTracksModalOpen(true)}
-        actionLabel={t('expand')}
-        actions={(
-          <>
-            <div className="min-w-[120px]">
-              <DashboardSelect
-                value={monthlyReportYear || String(monthly_report.selectedYear || monthlyReportYearOptions[0])}
-                onChange={applyMonthlyReportYear}
-                options={monthlyReportYearOptions}
-              />
+          <Panel
+            title={t('monthlyReport')}
+            subtitle={t('monthlyReportSubtitle')}
+            onHeaderClick={() => setActiveTracksModalOpen(true)}
+            actionLabel={t('expand')}
+            actions={(
+              <>
+                <div className="min-w-[120px]">
+                  <DashboardSelect
+                    value={monthlyReportYear || String(monthly_report.selectedYear || monthlyReportYearOptions[0])}
+                    onChange={applyMonthlyReportYear}
+                    options={monthlyReportYearOptions}
+                  />
+                </div>
+                <button
+                  onClick={shareMonthlyReport}
+                  className="qc-button inline-flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition"
+                >
+                  <Share2 size={15} />
+                  {t('shareMonthlyReport')}
+                </button>
+                <button
+                  onClick={exportMonthlyReport}
+                  className="qc-button inline-flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition"
+                >
+                  <Download size={15} />
+                  {t('exportMonthlyReport')}
+                </button>
+              </>
+            )}
+          >
+            <MonthlyReportContent
+              t={t}
+              report={monthly_report}
+              monthLabels={monthlyReportMonths}
+              periodLabel={monthlyReportPeriodLabel}
+              latestLabel={monthlyReportLatestLabel}
+              rows={monthlyReportPreviewRows}
+            />
+          </Panel>
+        </>
+      )}
+    </div>
+  );
+}
+
+function WorkspaceLauncherCard({ title, subtitle, metric, meta, tone = 'blue', icon: Icon, onClick, actionLabel }) {
+  const toneMap = {
+    blue: 'border-blue-200/70 bg-blue-50/40 dark:border-blue-500/20 dark:bg-blue-500/10',
+    indigo: 'border-indigo-200/70 bg-indigo-50/40 dark:border-indigo-500/20 dark:bg-indigo-500/10',
+    violet: 'border-violet-200/70 bg-violet-50/40 dark:border-violet-500/20 dark:bg-violet-500/10',
+    emerald: 'border-emerald-200/70 bg-emerald-50/40 dark:border-emerald-500/20 dark:bg-emerald-500/10',
+    amber: 'border-amber-200/70 bg-amber-50/40 dark:border-amber-500/20 dark:bg-amber-500/10',
+    rose: 'border-rose-200/70 bg-rose-50/40 dark:border-rose-500/20 dark:bg-rose-500/10',
+  };
+  const accentMap = {
+    blue: 'from-blue-600 to-sky-500',
+    indigo: 'from-indigo-600 to-blue-500',
+    violet: 'from-violet-600 to-fuchsia-500',
+    emerald: 'from-emerald-600 to-teal-500',
+    amber: 'from-amber-500 to-orange-500',
+    rose: 'from-rose-500 to-red-500',
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={clsx(
+        'group relative overflow-hidden rounded-2xl border p-4 text-left transition duration-300 hover:-translate-y-0.5 hover:shadow-[0_14px_30px_rgba(15,23,42,0.08)]',
+        toneMap[tone] || toneMap.blue
+      )}
+    >
+      <div className={clsx('absolute inset-x-0 top-0 h-1.5 bg-gradient-to-r', accentMap[tone] || accentMap.blue)} />
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-slate-950 dark:text-white">{title}</p>
+          <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">{subtitle}</p>
+        </div>
+        <div className="rounded-xl bg-white/90 p-2.5 text-slate-700 ring-1 ring-white/70 transition group-hover:scale-105 group-hover:text-blue-700 dark:bg-slate-950/80 dark:text-slate-200 dark:ring-slate-800">
+          <Icon size={17} />
+        </div>
+      </div>
+      <div className="mt-4 min-h-[70px]">
+        <p className="text-[clamp(1.45rem,2.2vw,2rem)] font-semibold tracking-tight text-slate-950 dark:text-white">{metric}</p>
+        <div className="mt-1.5 text-sm leading-5 text-slate-500 dark:text-slate-400">{meta}</div>
+      </div>
+      <div className="mt-3 inline-flex items-center gap-2 rounded-full border border-white/80 bg-white/85 px-2.5 py-1 text-xs font-semibold text-slate-700 shadow-sm transition group-hover:translate-x-0.5 group-hover:text-blue-700 dark:border-slate-700 dark:bg-slate-950/80 dark:text-slate-200 dark:group-hover:text-blue-300">
+        <ArrowUpRight size={13} />
+        {actionLabel}
+      </div>
+    </button>
+  );
+}
+
+function LeaderKpiContent({ t, kpi, summary, recentActivity, onOpenSla, onOpenRecentActivity, onOpenDuplicates }) {
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <KpiMetricCard
+          icon={Gauge}
+          label={t('closeRate')}
+          value={`${kpi.closeRate || 0}%`}
+          hint={`${summary?.today_resolved || 0}/${summary?.today_total || 0}`}
+          tone="blue"
+        />
+        <KpiMetricCard
+          icon={CheckCircle}
+          label={t('averageCloseDays')}
+          value={`${kpi.averageCloseDays || 0} ${t('daysShort')}`}
+          hint={t('closedItems')}
+          tone="emerald"
+        />
+        <KpiMetricCard
+          icon={Clock}
+          label={t('averageOpenDays')}
+          value={`${kpi.averageOpenDays || 0} ${t('daysShort')}`}
+          hint={t('inProgress')}
+          tone="amber"
+        />
+        <KpiMetricCard
+          icon={CopyMinus}
+          label={t('duplicateRisk')}
+          value={kpi.duplicateGroups || 0}
+          hint={`${kpi.duplicateRecords || 0} ${t('duplicateRecordsLabel')}`}
+          tone="rose"
+          onClick={onOpenDuplicates}
+        />
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-slate-800 dark:bg-slate-950/60">
+          <div className="mb-4 flex items-start justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <div className="rounded-xl bg-white p-2 text-slate-700 ring-1 ring-slate-200 dark:bg-slate-900 dark:text-slate-200 dark:ring-slate-700">
+                <ShieldAlert size={16} />
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold text-slate-950 dark:text-white">{t('slaOverview')}</h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400">{t('leaderSlaSubtitle')}</p>
+              </div>
             </div>
             <button
-              onClick={exportMonthlyReport}
-              className="qc-button inline-flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition"
+              type="button"
+              onClick={onOpenSla}
+              className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
             >
-              <Download size={15} />
-              {t('exportMonthlyReport')}
+              {t('expand')}
             </button>
-          </>
-        )}
-      >
-        <MonthlyReportContent
-          t={t}
-          report={monthly_report}
-          monthLabels={monthlyReportMonths}
-          periodLabel={monthlyReportPeriodLabel}
-          latestLabel={monthlyReportLatestLabel}
-          rows={monthlyReportPreviewRows}
+          </div>
+
+          <div className="space-y-3">
+            <ProgressRow label={t('healthy')} value={kpi.sla?.healthy || 0} max={kpi.sla?.total || 1} />
+            <ProgressRow label={t('warning')} value={kpi.sla?.warning || 0} max={kpi.sla?.total || 1} />
+            <ProgressRow label={t('critical')} value={kpi.sla?.critical || 0} max={kpi.sla?.total || 1} />
+          </div>
+
+          <div className="mt-4 grid grid-cols-2 gap-3">
+            <MiniKpiStat label={t('overdue')} value={kpi.overdueOpen || 0} tone="rose" />
+            <MiniKpiStat label={t('financeQueue')} value={summary?.finance || 0} tone="sky" />
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-slate-800 dark:bg-slate-950/60">
+          <div className="mb-4 flex items-start justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <div className="rounded-xl bg-white p-2 text-slate-700 ring-1 ring-slate-200 dark:bg-slate-900 dark:text-slate-200 dark:ring-slate-700">
+                <History size={16} />
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold text-slate-950 dark:text-white">{t('recentActivity')}</h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400">{t('recentActivitySubtitle')}</p>
+              </div>
+            </div>
+            {recentActivity.length > 0 && (
+              <button
+                type="button"
+                onClick={onOpenRecentActivity}
+                className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+              >
+                {t('expand')}
+              </button>
+            )}
+          </div>
+
+          <div className="max-h-[28rem] space-y-3 overflow-y-auto pr-1">
+            {recentActivity.length ? recentActivity.slice(0, 6).map((item) => (
+              <ActivityRow key={item.id} item={item} />
+            )) : (
+              <p className="rounded-xl border border-dashed border-slate-200 px-4 py-6 text-center text-sm text-slate-400 dark:border-slate-800">
+                {t('noActivityYet')}
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DepartmentOverviewContent({ items }) {
+  return (
+    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+      {items.map((item) => (
+        <DepartmentCard key={item.branch_name} item={item} />
+      ))}
+    </div>
+  );
+}
+
+function CompensatedControlContent({ t, overview, valueLabel }) {
+  const safeOverview = {
+    totalCompensated: Number(overview?.totalCompensated || 0),
+    recoveredCount: Number(overview?.recoveredCount || 0),
+    inProgressCount: Number(overview?.inProgressCount || 0),
+    closedCount: Number(overview?.closedCount || 0),
+    paymentTotal: Number(overview?.paymentTotal || 0),
+    refundedCount: Number(overview?.refundedCount || 0),
+    confiscatedCount: Number(overview?.confiscatedCount || 0),
+    pendingAmount: Number(overview?.pendingAmount || 0),
+    departmentBreakdown: Array.isArray(overview?.departmentBreakdown) ? overview.departmentBreakdown : [],
+    sourceBreakdown: Array.isArray(overview?.sourceBreakdown) ? overview.sourceBreakdown : [],
+    largestCases: Array.isArray(overview?.largestCases) ? overview.largestCases : [],
+    longestCases: Array.isArray(overview?.longestCases) ? overview.longestCases : [],
+  };
+  const formatStatus = typeof valueLabel === 'function' ? valueLabel : (value) => value || '-';
+
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <KpiMetricCard
+          icon={BriefcaseBusiness}
+          label={t('compensatedTotalCases')}
+          value={safeOverview.totalCompensated.toLocaleString('ru-RU')}
+          hint={t('compensatedLoads')}
+          tone="emerald"
         />
-      </Panel>
+        <KpiMetricCard
+          icon={PackageSearch}
+          label={t('compensatedRecovered')}
+          value={safeOverview.recoveredCount.toLocaleString('ru-RU')}
+          hint={t('foundTracksFixed')}
+          tone="blue"
+        />
+        <KpiMetricCard
+          icon={Clock}
+          label={t('statusInProgress')}
+          value={safeOverview.inProgressCount.toLocaleString('ru-RU')}
+          hint={t('activeWork')}
+          tone="amber"
+        />
+        <KpiMetricCard
+          icon={FileText}
+          label={t('compensatedTotalAmount')}
+          value={formatMoneyShort(safeOverview.paymentTotal)}
+          hint={t('paymentAmount')}
+          tone="rose"
+        />
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-slate-800 dark:bg-slate-950/60">
+          <div className="mb-4 flex items-center gap-2">
+            <div className="rounded-xl bg-white p-2 text-slate-700 ring-1 ring-slate-200 dark:bg-slate-900 dark:text-slate-200 dark:ring-slate-700">
+              <CheckCircle size={16} />
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold text-slate-950 dark:text-white">{t('compensatedWorkflowSnapshot')}</h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400">{t('compensatedWorkflowSnapshotSubtitle')}</p>
+            </div>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <MiniKpiStat label={t('statusClosed')} value={safeOverview.closedCount} tone="emerald" />
+            <MiniKpiStat label={t('statusInProgress')} value={safeOverview.inProgressCount} tone="amber" />
+            <MiniKpiStat label={t('customerRefunded')} value={safeOverview.refundedCount} tone="sky" />
+            <MiniKpiStat label={t('confiscatedLoads')} value={safeOverview.confiscatedCount} tone="rose" />
+          </div>
+          <div className="mt-3 rounded-xl bg-white px-3 py-3 text-sm text-slate-600 ring-1 ring-slate-200 dark:bg-slate-900 dark:text-slate-300 dark:ring-slate-700">
+            {t('expectedReturnAmount')}: <span className="font-semibold text-slate-950 dark:text-white">{formatMoneyShort(safeOverview.pendingAmount)}</span>
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-slate-800 dark:bg-slate-950/60">
+          <div className="mb-4 flex items-center gap-2">
+            <div className="rounded-xl bg-white p-2 text-slate-700 ring-1 ring-slate-200 dark:bg-slate-900 dark:text-slate-200 dark:ring-slate-700">
+              <ShieldAlert size={16} />
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold text-slate-950 dark:text-white">{t('compensatedRiskCases')}</h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400">{t('compensatedRiskCasesSubtitle')}</p>
+            </div>
+          </div>
+          <div className="space-y-3">
+            {safeOverview.longestCases.length ? safeOverview.longestCases.map((item) => (
+              <div key={item.id} className="rounded-xl bg-white px-3 py-3 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-700">
+                <div className="flex items-center justify-between gap-3">
+                  <Link to={`/complaints/${item.foundEntry?.id || item.id}`} className="font-mono text-sm font-semibold text-slate-950 transition hover:text-blue-600 dark:text-white dark:hover:text-blue-300">
+                    {item.trackCode}
+                  </Link>
+                  <span className={clsx('rounded-full px-2 py-1 text-xs font-semibold ring-1', item.foundResolutionStatus === 'Yopildi' ? PRIORITY_BADGE.Past : PRIORITY_BADGE["O'rta"])}>
+                    {item.recoveredDays ?? 0} {t('daysShort')}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                  {item.department || '-'} • {item.requestSource || '-'} • {item.handledBy || '-'}
+                </p>
+              </div>
+            )) : (
+              <p className="rounded-xl border border-dashed border-slate-200 px-4 py-8 text-center text-sm text-slate-400 dark:border-slate-800">
+                {t('noData')}
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <SimpleRankList title={t('responsibleDepartment')} items={safeOverview.departmentBreakdown} emptyLabel={t('noData')} />
+        <SimpleRankList title={t('requestSources')} items={safeOverview.sourceBreakdown} emptyLabel={t('noData')} />
+      </div>
+
+      <div className="rounded-2xl border border-slate-200 dark:border-slate-800">
+        <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3 dark:border-slate-800">
+          <h3 className="text-sm font-semibold text-slate-950 dark:text-white">{t('compensatedLargestCases')}</h3>
+          <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600 ring-1 ring-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700">
+            {safeOverview.largestCases.length} ta
+          </span>
+        </div>
+        <div className="max-h-[360px] overflow-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-slate-200 bg-slate-50 text-left dark:border-slate-800 dark:bg-slate-950/80">
+                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('track')}</th>
+                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('customer')}</th>
+                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('paymentAmount')}</th>
+                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('workflowOutcome')}</th>
+                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('status')}</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+              {safeOverview.largestCases.map((item) => (
+                <tr key={item.id} className="transition hover:bg-slate-50 dark:hover:bg-slate-800/50">
+                  <td className="whitespace-nowrap px-4 py-3 font-mono font-semibold">
+                    <Link to={`/complaints/${item.foundEntry?.id || item.id}`} className="text-slate-950 transition hover:text-blue-600 dark:text-white dark:hover:text-blue-300">
+                      {item.trackCode}
+                    </Link>
+                  </td>
+                  <td className="whitespace-nowrap px-4 py-3 text-slate-600 dark:text-slate-300">{item.customer || '-'}</td>
+                  <td className="whitespace-nowrap px-4 py-3 font-semibold text-slate-700 dark:text-slate-200">{formatMoneyShort(item.paymentAmount)}</td>
+                  <td className="whitespace-nowrap px-4 py-3 text-slate-600 dark:text-slate-300">{item.foundCaseOutcome || '-'}</td>
+                  <td className="whitespace-nowrap px-4 py-3">
+                    <span className={clsx('inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ring-1', item.foundResolutionStatus === 'Yopildi' ? PRIORITY_BADGE.Past : PRIORITY_BADGE["O'rta"])}>
+                      {formatStatus(item.foundResolutionStatus)}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }
 
 function Panel({ title, subtitle, className, children, onHeaderClick, actionLabel, actions = null }) {
   return (
-    <div className={clsx('qc-panel rounded-2xl p-4', className)}>
-      <div className="mb-4 flex items-start justify-between gap-3">
+    <div className={clsx('qc-panel overflow-hidden rounded-2xl p-4 xl:p-5', className)}>
+      <div className="mb-4 flex items-start justify-between gap-3 border-b border-slate-100 pb-3 dark:border-slate-800/80">
         <div>
-          <h2 className="text-base font-semibold text-slate-950 dark:text-white">{title}</h2>
-          {subtitle && <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{subtitle}</p>}
+          <h2 className="text-base font-semibold tracking-tight text-slate-950 dark:text-white">{title}</h2>
+          {subtitle && <p className="mt-1 text-sm leading-6 text-slate-500 dark:text-slate-400">{subtitle}</p>}
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {actions}
@@ -1285,233 +2221,6 @@ function Panel({ title, subtitle, className, children, onHeaderClick, actionLabe
       </div>
       {children}
     </div>
-  );
-}
-
-function MonthlyReportContent({ t, report, monthLabels, periodLabel, latestLabel, rows, full = false }) {
-  const visibleRows = rows || report.rows || [];
-  const totalProblemTypes = report.rows?.length || 0;
-  const decreasedShare = totalProblemTypes ? Math.round(((report.decreasedCount || 0) / totalProblemTypes) * 100) : 0;
-  const increasedShare = totalProblemTypes ? Math.round(((report.increasedCount || 0) / totalProblemTypes) * 100) : 0;
-  const totalRow = {
-    problemType: t('total'),
-    total: report.totalRecords || 0,
-    months: report.totals || [],
-  };
-
-  return (
-    <div className="space-y-4">
-      {full && (
-        <div>
-          <p className="text-sm font-semibold uppercase tracking-[0.18em] text-blue-700 dark:text-blue-300">WORKPLACE CRM</p>
-          <h3 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950 dark:text-white">{t('monthlyReport')}</h3>
-        </div>
-      )}
-
-      <div className="grid gap-3 xl:grid-cols-4">
-        <MonthlyReportMetricCard
-          label={t('totalRecordsLabel')}
-          value={report.totalRecords || 0}
-          hint={periodLabel}
-          tone="blue"
-        />
-        <MonthlyReportMetricCard
-          label={t('topProblemLabel')}
-          value={report.topProblem?.name || t('noData')}
-          secondaryValue={report.topProblem ? report.topProblem.count : null}
-          hint={t('topProblemHint')}
-          tone="blue"
-          compactText
-        />
-        <MonthlyReportMetricCard
-          label={t('decreasedLabel')}
-          value={report.decreasedCount || 0}
-          hint={t('greenSignal')}
-          tone="emerald"
-          metaBadge={`${decreasedShare}%`}
-        />
-        <MonthlyReportMetricCard
-          label={t('increasedLabel')}
-          value={report.increasedCount || 0}
-          hint={t('redSignal')}
-          tone="rose"
-          metaBadge={`${increasedShare}%`}
-        />
-      </div>
-
-      <div className="flex flex-wrap gap-2">
-        <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-sm font-medium text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
-          {t('periodLabel')}: {periodLabel}
-        </span>
-        <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-sm font-medium text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
-          {t('lastActiveMonthLabel')}: {latestLabel}
-        </span>
-        <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-sm font-medium text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
-          {t('monthlyChangeHint')}
-        </span>
-      </div>
-
-      <div className="overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-800">
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-sm">
-            <thead>
-              <tr className="border-b border-slate-200 bg-slate-50 text-left dark:border-slate-800 dark:bg-slate-950/80">
-                <th className="min-w-[280px] px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('problemType')}</th>
-                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('total')}</th>
-                {monthLabels.map((month) => (
-                  <th key={month.monthIndex} className="min-w-[160px] px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    {month.label}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              <MonthlyReportRow row={totalRow} monthLabels={monthLabels} />
-              {visibleRows.length === 0 ? (
-                <tr>
-                  <td colSpan={monthLabels.length + 2} className="px-4 py-12 text-center text-slate-400">
-                    {t('noData')}
-                  </td>
-                </tr>
-              ) : (
-                visibleRows.map((row) => (
-                  <MonthlyReportRow key={row.problemType} row={row} monthLabels={monthLabels} />
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {!full && report.rows?.length > visibleRows.length && (
-        <p className="text-xs text-slate-500 dark:text-slate-400">
-          {t('showing')} {visibleRows.length} / {report.rows.length}
-        </p>
-      )}
-    </div>
-  );
-}
-
-function MonthlyReportRow({ row, monthLabels }) {
-  return (
-    <tr className="transition hover:bg-slate-50 dark:hover:bg-slate-800/50">
-      <td className="px-4 py-4 font-semibold text-slate-950 dark:text-white">{row.problemType}</td>
-      <td className="px-4 py-4 text-2xl font-semibold tracking-tight text-slate-900 dark:text-white">{row.total}</td>
-      {monthLabels.map((month) => {
-        const monthData = row.months?.find((item) => item.monthIndex === month.monthIndex) || { count: 0, trend: { direction: 'neutral', percent: 0 } };
-        return (
-          <td key={month.monthIndex} className="px-4 py-4">
-            <div className="flex items-center gap-3">
-              <span className="text-2xl font-semibold tracking-tight text-slate-900 dark:text-white">{monthData.count}</span>
-              <TrendBadge trend={monthData.trend} />
-            </div>
-          </td>
-        );
-      })}
-    </tr>
-  );
-}
-
-function MonthlyReportMetricCard({
-  label,
-  value,
-  hint,
-  tone = 'blue',
-  secondaryValue = null,
-  metaBadge = null,
-  compactText = false,
-}) {
-  const toneClass = {
-    blue: 'border-blue-200/80 bg-blue-50/60 dark:border-blue-500/20 dark:bg-blue-500/10',
-    emerald: 'border-emerald-200/80 bg-emerald-50/60 dark:border-emerald-500/20 dark:bg-emerald-500/10',
-    rose: 'border-rose-200/80 bg-rose-50/60 dark:border-rose-500/20 dark:bg-rose-500/10',
-  };
-  const accentClass = {
-    blue: 'bg-blue-600',
-    emerald: 'bg-emerald-500',
-    rose: 'bg-rose-500',
-  };
-  const isNumericValue = typeof value === 'number';
-  const displayValue = isNumericValue ? value.toLocaleString() : value;
-  const valueToneClass = {
-    blue: 'text-slate-950 dark:text-white',
-    emerald: 'text-slate-950 dark:text-white',
-    rose: 'text-slate-950 dark:text-white',
-  };
-  const badgeToneClass = {
-    blue: 'bg-white/85 text-blue-700 ring-blue-200 dark:bg-slate-900/70 dark:text-blue-300 dark:ring-blue-500/20',
-    emerald: 'bg-white/85 text-emerald-700 ring-emerald-200 dark:bg-slate-900/70 dark:text-emerald-300 dark:ring-emerald-500/20',
-    rose: 'bg-white/85 text-rose-700 ring-rose-200 dark:bg-slate-900/70 dark:text-rose-300 dark:ring-rose-500/20',
-  };
-
-  return (
-    <div className={clsx('relative h-full overflow-hidden rounded-2xl border p-4', toneClass[tone])}>
-      <div className={clsx('absolute inset-y-0 left-0 w-1.5', accentClass[tone])} />
-      <div className="flex min-h-[156px] flex-col justify-between pl-3">
-        <div className="flex items-start justify-between gap-3">
-          <p className="text-sm font-semibold text-slate-500 dark:text-slate-300">{label}</p>
-          {metaBadge && (
-            <span className={clsx('inline-flex shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ring-1', badgeToneClass[tone])}>
-              {metaBadge}
-            </span>
-          )}
-        </div>
-
-        <div className="space-y-2">
-          <p
-            className={clsx(
-              'break-words font-semibold tracking-tight',
-              valueToneClass[tone],
-              isNumericValue
-                ? 'text-[clamp(1.8rem,2.6vw,2.4rem)]'
-                : compactText
-                  ? 'max-w-[14ch] text-[clamp(1.05rem,1.65vw,1.55rem)] leading-tight'
-                  : 'text-[clamp(1.15rem,1.9vw,1.9rem)] leading-tight'
-            )}
-          >
-            {displayValue}
-          </p>
-          {secondaryValue != null && (
-            <p className="text-[clamp(1.2rem,1.7vw,1.6rem)] font-semibold tracking-tight text-slate-950 dark:text-white">
-              {Number(secondaryValue).toLocaleString()}
-            </p>
-          )}
-        </div>
-
-        <p className="text-sm text-slate-500 dark:text-slate-400">{hint}</p>
-      </div>
-    </div>
-  );
-}
-
-function TrendBadge({ trend }) {
-  if (!trend || trend.percent == null) {
-    return (
-      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-500 ring-1 ring-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700">
-        -
-      </span>
-    );
-  }
-
-  const toneClass = {
-    up: 'bg-rose-50 text-rose-700 ring-rose-200 dark:bg-rose-500/10 dark:text-rose-300 dark:ring-rose-500/20',
-    down: 'bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-300 dark:ring-emerald-500/20',
-    neutral: 'bg-slate-100 text-slate-500 ring-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700',
-    start: 'bg-slate-100 text-slate-500 ring-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700',
-  };
-
-  const prefix = trend.percent > 0 ? '+' : '';
-  const Icon = trend.direction === 'up'
-    ? ArrowUpRight
-    : trend.direction === 'down'
-      ? ArrowDownRight
-      : null;
-
-  return (
-    <span className={clsx('inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ring-1', toneClass[trend.direction] || toneClass.neutral)}>
-      {Icon ? <Icon size={12} /> : null}
-      {prefix}{trend.percent}%
-    </span>
   );
 }
 
@@ -1590,7 +2299,7 @@ function DateRangeFilter({ value, onChange, label }) {
   const days = buildCalendarDays(monthCursor);
 
   return (
-    <div className="relative flex items-center gap-2">
+    <div className="relative z-[260] flex items-center gap-2">
       <button
         type="button"
         onClick={openPicker}
@@ -1615,7 +2324,7 @@ function DateRangeFilter({ value, onChange, label }) {
       )}
 
       {open && (
-        <div className="absolute right-0 top-12 z-[220] w-[340px] rounded-2xl border border-slate-200 bg-white p-3 shadow-2xl shadow-slate-950/15 dark:border-slate-800 dark:bg-slate-900 dark:shadow-black/40">
+        <div className="absolute right-0 top-12 z-[420] w-[340px] rounded-2xl border border-slate-200 bg-white p-3 shadow-2xl shadow-slate-950/15 dark:border-slate-800 dark:bg-slate-900 dark:shadow-black/40">
           <div className="mb-3 flex items-center justify-between gap-3">
             <p className="text-sm font-semibold text-slate-950 dark:text-white">{label}</p>
             <button
@@ -1704,170 +2413,140 @@ function DateRangeFilter({ value, onChange, label }) {
   );
 }
 
-function formatDateLabel(value) {
-  if (!value) return '';
-  const [year, month, day] = value.split('-');
-  return `${day}.${month}.${year}`;
-}
-
-function getInitialMonth(value) {
-  const dateValue = value.from || value.to;
-  const date = dateValue ? new Date(`${dateValue}T00:00:00`) : new Date();
-  return new Date(date.getFullYear(), date.getMonth(), 1);
-}
-
-function buildCalendarDays(monthDate) {
-  const firstDay = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1);
-  const startOffset = (firstDay.getDay() + 6) % 7;
-  const start = new Date(firstDay);
-  start.setDate(firstDay.getDate() - startOffset);
-
-  return Array.from({ length: 42 }).map((_, index) => {
-    const date = new Date(start);
-    date.setDate(start.getDate() + index);
-    return {
-      date,
-      key: toDateKey(date),
-      inMonth: date.getMonth() === monthDate.getMonth(),
-    };
-  });
-}
-
-function addMonths(date, amount) {
-  return new Date(date.getFullYear(), date.getMonth() + amount, 1);
-}
-
-function formatMonthTitle(date) {
-  const monthNames = [
-    'Yanvar',
-    'Fevral',
-    'Mart',
-    'Aprel',
-    'May',
-    'Iyun',
-    'Iyul',
-    'Avgust',
-    'Sentabr',
-    'Oktabr',
-    'Noyabr',
-    'Dekabr',
-  ];
-  return `${monthNames[date.getMonth()]} ${date.getFullYear()}`;
-}
-
-function normalizeRange(range) {
-  if (range.from && range.to && range.to < range.from) {
-    return { from: range.to, to: range.from };
-  }
-  return range;
-}
-
-function EmployeeMetric({ label, value, tone = 'slate' }) {
-  const toneClass = {
-    slate: 'bg-slate-50 text-slate-950 ring-slate-200 dark:bg-slate-950 dark:text-white dark:ring-slate-800',
-    emerald: 'bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-300 dark:ring-emerald-500/20',
-    amber: 'bg-amber-50 text-amber-700 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-500/20',
-    rose: 'bg-rose-50 text-rose-700 ring-rose-200 dark:bg-rose-500/10 dark:text-rose-300 dark:ring-rose-500/20',
+function CompactDepartmentStatCard({ title, value, meta, icon: Icon, tone = 'blue', badgeText = '', badgeTone = 'neutral', actionLabel = '', onAction }) {
+  const toneMap = {
+    blue: 'border-blue-200/90 bg-[linear-gradient(180deg,rgba(219,234,254,0.95),rgba(239,246,255,0.92))] dark:border-blue-500/25 dark:bg-[linear-gradient(180deg,rgba(37,99,235,0.24),rgba(15,23,42,0.94))]',
+    violet: 'border-violet-200/90 bg-[linear-gradient(180deg,rgba(237,233,254,0.95),rgba(245,243,255,0.92))] dark:border-violet-500/25 dark:bg-[linear-gradient(180deg,rgba(124,58,237,0.22),rgba(15,23,42,0.94))]',
+    emerald: 'border-emerald-200/90 bg-[linear-gradient(180deg,rgba(209,250,229,0.95),rgba(236,253,245,0.92))] dark:border-emerald-500/25 dark:bg-[linear-gradient(180deg,rgba(16,185,129,0.2),rgba(15,23,42,0.94))]',
+    amber: 'border-amber-200/90 bg-[linear-gradient(180deg,rgba(254,243,199,0.95),rgba(255,251,235,0.92))] dark:border-amber-500/25 dark:bg-[linear-gradient(180deg,rgba(245,158,11,0.2),rgba(15,23,42,0.94))]',
+    rose: 'border-rose-200/90 bg-[linear-gradient(180deg,rgba(255,228,230,0.95),rgba(255,241,242,0.92))] dark:border-rose-500/25 dark:bg-[linear-gradient(180deg,rgba(244,63,94,0.22),rgba(15,23,42,0.94))]',
+    indigo: 'border-indigo-200/90 bg-[linear-gradient(180deg,rgba(224,231,255,0.95),rgba(238,242,255,0.92))] dark:border-indigo-500/25 dark:bg-[linear-gradient(180deg,rgba(99,102,241,0.24),rgba(15,23,42,0.94))]',
+  };
+  const iconToneMap = {
+    blue: 'border-blue-200 bg-white text-blue-700 dark:border-blue-500/25 dark:bg-blue-500/15 dark:text-blue-300',
+    violet: 'border-violet-200 bg-white text-violet-700 dark:border-violet-500/25 dark:bg-violet-500/15 dark:text-violet-300',
+    emerald: 'border-emerald-200 bg-white text-emerald-700 dark:border-emerald-500/25 dark:bg-emerald-500/15 dark:text-emerald-300',
+    amber: 'border-amber-200 bg-white text-amber-700 dark:border-amber-500/25 dark:bg-amber-500/15 dark:text-amber-300',
+    rose: 'border-rose-200 bg-white text-rose-700 dark:border-rose-500/25 dark:bg-rose-500/15 dark:text-rose-300',
+    indigo: 'border-indigo-200 bg-white text-indigo-700 dark:border-indigo-500/25 dark:bg-indigo-500/15 dark:text-indigo-300',
+  };
+  const lineToneMap = {
+    blue: 'bg-blue-500',
+    violet: 'bg-violet-500',
+    emerald: 'bg-emerald-500',
+    amber: 'bg-amber-500',
+    rose: 'bg-rose-500',
+    indigo: 'bg-indigo-500',
+  };
+  const badgeToneMap = {
+    positive: 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300',
+    negative: 'border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-300',
+    neutral: 'border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300',
   };
 
   return (
-    <div className={clsx('rounded-2xl p-4 ring-1', toneClass[tone])}>
-      <p className="text-sm font-medium opacity-75">{label}</p>
-      <p className="mt-2 text-3xl font-semibold">{value}</p>
-    </div>
-  );
-}
-
-function KpiMetricCard({ icon: Icon, label, value, hint, tone = 'blue' }) {
-  const toneClass = {
-    blue: 'text-blue-700 ring-blue-100 dark:text-blue-300 dark:ring-blue-500/20',
-    emerald: 'text-emerald-700 ring-emerald-100 dark:text-emerald-300 dark:ring-emerald-500/20',
-    amber: 'text-amber-700 ring-amber-100 dark:text-amber-300 dark:ring-amber-500/20',
-    rose: 'text-rose-700 ring-rose-100 dark:text-rose-300 dark:ring-rose-500/20',
-  };
-  const accentClass = {
-    blue: 'from-blue-600 to-sky-500',
-    emerald: 'from-emerald-600 to-teal-500',
-    amber: 'from-amber-500 to-orange-500',
-    rose: 'from-rose-500 to-red-500',
-  };
-
-  return (
-    <div className={clsx('flex min-h-[164px] flex-col rounded-2xl bg-white p-4 ring-1 dark:bg-slate-950/80', toneClass[tone])}>
-      <div className={clsx('mb-4 h-1.5 rounded-full bg-gradient-to-r', accentClass[tone])} />
+    <div className={clsx('relative overflow-hidden rounded-2xl border p-4 shadow-sm', toneMap[tone] || toneMap.blue)}>
+      <div className={clsx('absolute inset-x-0 top-0 h-1.5', lineToneMap[tone] || lineToneMap.blue)} />
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-sm font-medium leading-5 opacity-80">{label}</p>
-          <p className="mt-3 break-words text-[clamp(1.9rem,3vw,2.5rem)] font-semibold leading-none tracking-tight text-slate-950 dark:text-white">{value}</p>
+          <p className="text-sm font-semibold text-slate-600 dark:text-slate-300">{title}</p>
+          <p className="mt-3 text-[clamp(1.5rem,2.4vw,2.25rem)] font-semibold tracking-tight text-slate-950 dark:text-white">{value}</p>
         </div>
-        <div className="rounded-xl bg-slate-50 p-2.5 text-current ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-800">
-          <Icon size={18} />
+        <div className={clsx('inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border shadow-sm', iconToneMap[tone] || iconToneMap.blue)}>
+          <Icon size={20} />
         </div>
       </div>
-      <p className="mt-auto pt-4 text-xs text-slate-500 dark:text-slate-400">{hint}</p>
-    </div>
-  );
-}
-
-function ExecutivePulse({ label, value, tone = 'slate' }) {
-  const toneClass = {
-    slate: 'bg-white text-slate-700 ring-slate-200 dark:bg-slate-900 dark:text-slate-200 dark:ring-slate-700',
-    emerald: 'bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-300 dark:ring-emerald-500/20',
-    rose: 'bg-rose-50 text-rose-700 ring-rose-200 dark:bg-rose-500/10 dark:text-rose-300 dark:ring-rose-500/20',
-  };
-
-  return (
-    <div className={clsx('rounded-2xl px-3 py-3 ring-1', toneClass[tone])}>
-      <p className="text-[11px] font-semibold uppercase tracking-[0.14em] opacity-75">{label}</p>
-      <p className="mt-2 text-xl font-semibold tracking-tight">{value}</p>
-    </div>
-  );
-}
-
-function MiniKpiStat({ label, value, tone = 'slate' }) {
-  const toneClass = {
-    rose: 'bg-rose-50 text-rose-700 ring-rose-200 dark:bg-rose-500/10 dark:text-rose-300 dark:ring-rose-500/20',
-    sky: 'bg-sky-50 text-sky-700 ring-sky-200 dark:bg-sky-500/10 dark:text-sky-300 dark:ring-sky-500/20',
-    slate: 'bg-slate-50 text-slate-700 ring-slate-200 dark:bg-slate-900 dark:text-slate-200 dark:ring-slate-700',
-  };
-
-  return (
-    <div className={clsx('rounded-xl px-3 py-3 ring-1', toneClass[tone])}>
-      <p className="text-xs font-medium opacity-80">{label}</p>
-      <p className="mt-1 text-2xl font-semibold tracking-tight">{value}</p>
-    </div>
-  );
-}
-
-function ProgressRow({ label, value, max }) {
-  return (
-    <div>
-      <div className="mb-2 flex items-center justify-between gap-3 text-sm">
-        <span className="font-medium text-slate-700 dark:text-slate-200">{label}</span>
-        <span className="text-slate-500 dark:text-slate-400">{value}</span>
-      </div>
-      <div className="h-2 overflow-hidden rounded-full bg-blue-50 ring-1 ring-blue-100/70 dark:bg-slate-800 dark:ring-slate-700">
-        <div className="h-full rounded-full bg-gradient-to-r from-blue-600 to-teal-500" style={{ width: `${Math.min(100, (value / max) * 100)}%` }} />
-      </div>
-    </div>
-  );
-}
-
-function ActivityRow({ item }) {
-  return (
-    <div className="rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-sm font-medium text-slate-900 dark:text-white">{item.message || '-'}</p>
-          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-            {item.actorName || 'System'} • {format(new Date(item.timestamp), 'dd.MM.yyyy HH:mm')}
-          </p>
-        </div>
-        {item.trackCode ? (
-          <span className="rounded-lg bg-slate-50 px-2 py-1 font-mono text-[11px] font-semibold text-slate-600 ring-1 ring-slate-200 dark:bg-slate-950 dark:text-slate-300 dark:ring-slate-700">
-            {item.trackCode}
+      {badgeText ? (
+        <div className="mt-3">
+          <span className={clsx('inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold', badgeToneMap[badgeTone] || badgeToneMap.neutral)}>
+            {badgeText}
           </span>
-        ) : null}
+        </div>
+      ) : null}
+      <div className="mt-4 rounded-2xl border border-white/85 bg-white/90 px-3 py-2 text-sm font-medium leading-5 text-slate-700 shadow-sm backdrop-blur dark:border-slate-700 dark:bg-slate-900/80 dark:text-slate-200">
+        {meta}
+      </div>
+      {actionLabel && onAction ? (
+        <button
+          type="button"
+          onClick={onAction}
+          className="mt-3 inline-flex items-center gap-2 rounded-xl border border-white/70 bg-white/85 px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-white dark:border-slate-700 dark:bg-slate-900/80 dark:text-slate-200 dark:hover:bg-slate-900"
+        >
+          <Maximize2 size={14} />
+          {actionLabel}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function DepartmentForecastInsight({ t, stats }) {
+  const detailRows = [
+    { label: t('departmentForecastCurrentMonth'), value: `${stats.forecast.currentValue.toLocaleString('ru-RU')} ${t('tracksShort')}` },
+    { label: t('departmentForecastPreviousMonth'), value: `${stats.forecast.previousValue.toLocaleString('ru-RU')} ${t('tracksShort')}` },
+    { label: t('departmentForecastRecentAverage'), value: `${stats.forecast.recentAverage.toLocaleString('ru-RU')} ${t('tracksShort')}` },
+    { label: t('departmentForecastOverallAverage'), value: `${stats.forecast.overallAverage.toLocaleString('ru-RU')} ${t('tracksShort')}` },
+    { label: t('departmentForecastTrend'), value: `${stats.forecast.trend > 0 ? '+' : ''}${stats.forecast.trend} ${t('tracksShort')}` },
+  ];
+
+  return (
+    <div className="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
+      <div className="rounded-3xl border border-indigo-200/80 bg-[linear-gradient(180deg,rgba(238,242,255,0.95),rgba(255,255,255,1))] p-5 dark:border-indigo-500/20 dark:bg-[linear-gradient(180deg,rgba(79,70,229,0.14),rgba(15,23,42,0.92))]">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-sm font-medium text-slate-500 dark:text-slate-400">{t('departmentForecastExpectedLoad')}</p>
+            <p className="mt-3 text-4xl font-semibold tracking-tight text-slate-950 dark:text-white">
+              {stats.nextMonthForecast.toLocaleString('ru-RU')} {t('tracksShort')}
+            </p>
+          </div>
+          <span className={clsx(
+            'inline-flex rounded-full border px-3 py-1.5 text-sm font-semibold',
+            stats.nextMonthChangePct > 0
+              ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300'
+              : stats.nextMonthChangePct < 0
+                ? 'border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-300'
+                : 'border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300'
+          )}>
+            {formatSignedPercent(stats.nextMonthChangePct)} {t('vsCurrentMonth')}
+          </span>
+        </div>
+        <p className="mt-4 text-sm leading-6 text-slate-600 dark:text-slate-300">{t('departmentForecastExplanation')}</p>
+        <div className="mt-5 grid gap-3 sm:grid-cols-2">
+          {detailRows.map((row) => (
+            <div key={row.label} className="rounded-2xl border border-white/80 bg-white/80 px-4 py-3 shadow-sm dark:border-slate-700 dark:bg-slate-900/70">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{row.label}</p>
+              <p className="mt-2 text-lg font-semibold text-slate-950 dark:text-white">{row.value}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="rounded-3xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+        <h3 className="text-base font-semibold text-slate-950 dark:text-white">{t('departmentForecastDriversTitle')}</h3>
+        <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{t('departmentForecastDriversSubtitle')}</p>
+        <div className="mt-4 space-y-3">
+          {stats.forecast.drivers.map((driver) => (
+            <div
+              key={`${driver.title}-${driver.value}`}
+              className={clsx(
+                'rounded-2xl border px-4 py-3',
+                driver.tone === 'positive'
+                  ? 'border-emerald-200 bg-emerald-50/70 dark:border-emerald-500/20 dark:bg-emerald-500/10'
+                  : driver.tone === 'negative'
+                    ? 'border-rose-200 bg-rose-50/70 dark:border-rose-500/20 dark:bg-rose-500/10'
+                    : 'border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800/80'
+              )}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-slate-900 dark:text-white">{driver.title}</p>
+                  <p className="mt-1 text-sm leading-6 text-slate-600 dark:text-slate-300">{driver.description}</p>
+                </div>
+                <span className="text-sm font-semibold text-slate-900 dark:text-white">{driver.value}</span>
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -1899,6 +2578,593 @@ function InsightModal({ title, subtitle, children, onClose }) {
       </div>
     </div>
   );
+}
+
+function buildDepartmentStatsFromSources(recordsSource = [], usersSource = [], selectedMonth, selectedYear) {
+  const now = new Date();
+  const targetMonth = Number.isInteger(selectedMonth) ? selectedMonth : now.getMonth();
+  const targetYear = Number.isInteger(selectedYear) ? selectedYear : now.getFullYear();
+  const targetMonthPrefix = `${targetYear}-${String(targetMonth + 1).padStart(2, '0')}`;
+  const monthLabel = REPORT_MONTH_LABELS.uz[targetMonth] || '-';
+  const records = Array.isArray(recordsSource) ? recordsSource : [];
+  const users = Array.isArray(usersSource) ? usersSource.filter((item) => item.active !== false) : [];
+  const minutesLookup = buildProblemMinutesLookup(getOtkSettings().problemTypes || []);
+  const leaders = users.filter((item) => isAdminRole(item.role) || isManagerRole(item.role));
+  const leaderKeys = buildDepartmentLeaderKeySet(leaders);
+
+  const monthlyRecords = records.filter((entry) => toDateKey(entry.date).startsWith(targetMonthPrefix));
+  const leaderMonthlyRecords = monthlyRecords.filter((entry) => {
+    const ownerKey = normalizeDepartmentPersonKey(entry.handledBy || entry.createdBy);
+    return ownerKey && leaderKeys.has(ownerKey);
+  });
+
+  const workloadSplit = monthlyRecords.reduce(
+    (accumulator, entry) => {
+      if (isAdditionalDepartmentWorkEntry(entry)) {
+        accumulator.extra += 1;
+      } else {
+        accumulator.core += 1;
+      }
+      return accumulator;
+    },
+    { core: 0, extra: 0 }
+  );
+
+  const workdaysElapsed = countDepartmentWorkdays(targetYear, targetMonth, now);
+  const leaderDailyAverageRaw = workdaysElapsed ? leaderMonthlyRecords.length / workdaysElapsed : 0;
+  const leaderDailyFlow = roundDepartmentMetric(leaderDailyAverageRaw);
+  const leaderCount = leaders.length || 1;
+  const perEmployeeDailyFlow = roundDepartmentMetric(leaderDailyAverageRaw / leaderCount);
+  const monthlyLeaderMinutes = leaderMonthlyRecords.reduce((sum, entry) => sum + getEntryEstimatedMinutes(entry, minutesLookup), 0);
+  const estimatedMinutes = workdaysElapsed ? Math.round(monthlyLeaderMinutes / workdaysElapsed) : 0;
+  const perEmployeeMinutes = leaderCount ? Math.round(estimatedMinutes / leaderCount) : 0;
+  const totalLeaderWorkMinutesPerDay = leaders.reduce((sum, leader) => sum + getUserWorkdayMinutes(leader), 0);
+  const perEmployeeCapacityMinutes = leaderCount ? Math.round(totalLeaderWorkMinutesPerDay / leaderCount) : 0;
+  const forecast = forecastDepartmentNextMonth(records, now.getFullYear(), now.getMonth(), minutesLookup);
+
+  return {
+    coreTrackCount: workloadSplit.core,
+    extraTrackCount: workloadSplit.extra,
+    coreShare: monthlyRecords.length ? Math.round((workloadSplit.core / monthlyRecords.length) * 100) : 0,
+    extraShare: monthlyRecords.length ? Math.round((workloadSplit.extra / monthlyRecords.length) * 100) : 0,
+    monthlyTracks: monthlyRecords.length,
+    monthLabel,
+    leaderDailyFlow,
+    estimatedDailyTime: formatDepartmentDuration(estimatedMinutes),
+    employeeFlowMeta: `${leaderCount} ${pluralizeDepartmentEmployees(leaderCount)} orasida har biriga o'rtacha ${perEmployeeDailyFlow} trek`,
+    employeeTimeMeta: `${leaderCount} ${pluralizeDepartmentEmployees(leaderCount)} orasida har biriga o'rtacha ${formatDepartmentDuration(perEmployeeMinutes)} / me'yor ${formatDepartmentDuration(perEmployeeCapacityMinutes)}`,
+    nextMonthForecast: forecast.total,
+    nextMonthChangePct: forecast.changePct,
+    forecastMeta: `${forecast.label} uchun taxmin • ${formatDepartmentDuration(forecast.estimatedMinutes)}`,
+    forecast,
+  };
+}
+
+function normalizeDepartmentPersonKey(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/['`‘’"]/g, '')
+    .replace(/o‘|o'|g‘|g'/g, (match) => (match.startsWith('o') ? 'o' : 'g'))
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function buildDepartmentLeaderKeySet(users) {
+  const values = new Set();
+  users.forEach((item) => {
+    const full = normalizeDepartmentPersonKey(item.full_name);
+    const username = normalizeDepartmentPersonKey(item.username);
+    if (full) values.add(full);
+    if (username) values.add(username);
+  });
+  return values;
+}
+
+function isAdditionalDepartmentWorkEntry(entry) {
+  const haystack = normalizeDepartmentPersonKey(
+    [entry.problemType, entry.department, entry.requestSource, entry.comment].filter(Boolean).join(' ')
+  );
+
+  const extraKeywords = [
+    'vozvrat',
+    'qoplab',
+    'kompensatsiya',
+    'musodara',
+    'inventar',
+    '102',
+    'raqobatni rivojlantirish',
+    'istemolchilar huquqlari',
+    'rahbariyat',
+    'ichki bolim',
+    'ichki bulim',
+    'direct mijoz',
+    'pryamoy mijoz',
+    'operatorlarga ruyhat',
+    'operator обработка',
+    'omboridagi muamoli yuklar',
+  ];
+
+  return extraKeywords.some((keyword) => haystack.includes(normalizeDepartmentPersonKey(keyword)));
+}
+
+function countDepartmentWorkdays(year, month, referenceDate) {
+  const start = new Date(year, month, 1);
+  const endOfMonth = new Date(year, month + 1, 0);
+  const end = referenceDate.getFullYear() === year && referenceDate.getMonth() === month ? referenceDate : endOfMonth;
+  let count = 0;
+
+  for (let day = new Date(start); day <= end; day.setDate(day.getDate() + 1)) {
+    const weekday = day.getDay();
+    if (weekday !== 0) count += 1;
+  }
+
+  return Math.max(count, 1);
+}
+
+function roundDepartmentMetric(value) {
+  return Math.round((Number(value) || 0) * 10) / 10;
+}
+
+function formatDepartmentDuration(totalMinutes) {
+  const safe = Math.max(0, Number(totalMinutes) || 0);
+  const hours = Math.floor(safe / 60);
+  const minutes = safe % 60;
+  return `${hours} soat ${minutes} daqiqa`;
+}
+
+function formatSignedPercent(value) {
+  const numeric = Number(value) || 0;
+  if (numeric > 0) return `+${numeric}%`;
+  if (numeric < 0) return `${numeric}%`;
+  return '0%';
+}
+
+function getForecastBadgeTone(value) {
+  const numeric = Number(value) || 0;
+  if (numeric > 0) return 'positive';
+  if (numeric < 0) return 'negative';
+  return 'neutral';
+}
+
+function pluralizeDepartmentEmployees(count) {
+  return count === 1 ? 'hodim' : 'hodim';
+}
+
+function forecastDepartmentNextMonth(records, year, month, minutesLookup = new Map()) {
+  const currentValue = countDepartmentMonthRecords(records, year, month);
+  const previousValue = countDepartmentMonthRecords(records, month === 0 ? year - 1 : year, month === 0 ? 11 : month - 1);
+  const recentValues = Array.from({ length: 4 }, (_, index) => {
+    const offsetMonth = month - index;
+    const date = new Date(year, offsetMonth, 1);
+    return countDepartmentMonthRecords(records, date.getFullYear(), date.getMonth());
+  });
+  const recentAverage = recentValues.reduce((sum, value) => sum + value, 0) / recentValues.length;
+  const allMonthlyMap = new Map();
+  records.forEach((entry) => {
+    const key = toDateKey(entry.date).slice(0, 7);
+    allMonthlyMap.set(key, (allMonthlyMap.get(key) || 0) + 1);
+  });
+  const overallValues = Array.from(allMonthlyMap.values());
+  const overallAverage = overallValues.length ? overallValues.reduce((sum, value) => sum + value, 0) / overallValues.length : 0;
+  const total = Math.max(0, Math.round((currentValue * 0.55) + (recentAverage * 0.3) + (overallAverage * 0.15)));
+  const changePct = currentValue ? Math.round(((total - currentValue) / currentValue) * 100) : 0;
+  const currentMonthPrefix = `${year}-${String(month + 1).padStart(2, '0')}`;
+  const currentMonthMinutes = records
+    .filter((entry) => toDateKey(entry.date).startsWith(currentMonthPrefix))
+    .reduce((sum, entry) => sum + getEntryEstimatedMinutes(entry, minutesLookup), 0);
+  const averageMinutes = currentValue ? (currentMonthMinutes / currentValue) : 0;
+  const estimatedMinutes = Math.round(total * averageMinutes);
+  const nextDate = new Date(year, month + 1, 1);
+  const label = `${REPORT_MONTH_LABELS.uz[nextDate.getMonth()]} ${nextDate.getFullYear()}`;
+  const trend = total - currentValue;
+
+  return {
+    label,
+    total,
+    changePct,
+    currentValue,
+    previousValue,
+    recentAverage: roundDepartmentMetric(recentAverage),
+    overallAverage: roundDepartmentMetric(overallAverage),
+    trend,
+    estimatedMinutes,
+    drivers: buildDepartmentForecastDrivers({ currentValue, previousValue, recentAverage, overallAverage, total }),
+  };
+}
+
+function countDepartmentMonthRecords(records, year, month) {
+  const prefix = `${year}-${String(month + 1).padStart(2, '0')}`;
+  return records.filter((entry) => toDateKey(entry.date).startsWith(prefix)).length;
+}
+
+function buildDepartmentForecastDrivers({ currentValue, previousValue, recentAverage, overallAverage, total }) {
+  const drivers = [];
+  const prevDiff = total - previousValue;
+  drivers.push({
+    title: 'Oldingi oy bilan farq',
+    value: `${prevDiff > 0 ? '+' : ''}${prevDiff} trek`,
+    description: `Oldingi oy ${previousValue} ta bo'lgan, prognoz esa ${total} ta trekni ko'rsatmoqda.`,
+    tone: prevDiff > 0 ? 'positive' : prevDiff < 0 ? 'negative' : 'neutral',
+  });
+
+  const recentGap = roundDepartmentMetric(currentValue - recentAverage);
+  drivers.push({
+    title: "So'nggi oylar ritmi",
+    value: `${recentGap > 0 ? '+' : ''}${recentGap} trek`,
+    description: `So'nggi 4 oy o'rtachasi ${roundDepartmentMetric(recentAverage)} ta bo'lib, joriy oy shu temp bilan solishtirildi.`,
+    tone: recentGap > 0 ? 'positive' : recentGap < 0 ? 'negative' : 'neutral',
+  });
+
+  drivers.push({
+    title: 'Umumiy tarixiy fon',
+    value: `${roundDepartmentMetric(overallAverage)} trek`,
+    description: `Prognoz umumiy tarix bo'yicha o'rtacha ${roundDepartmentMetric(overallAverage)} trek fonini ham hisobga oladi.`,
+    tone: 'neutral',
+  });
+
+  return drivers;
+}
+
+function buildDepartmentStatsAligned(recordsSource = [], usersSource = [], selectedMonth, selectedYear) {
+  const now = new Date();
+  const targetMonth = Number.isInteger(selectedMonth) ? selectedMonth : now.getMonth();
+  const targetYear = Number.isInteger(selectedYear) ? selectedYear : now.getFullYear();
+  const targetMonthPrefix = `${targetYear}-${String(targetMonth + 1).padStart(2, '0')}`;
+  const monthLabel = getAlignedDepartmentMonthLabel(targetMonth);
+  const records = Array.isArray(recordsSource) ? recordsSource : [];
+  const users = Array.isArray(usersSource) ? usersSource.filter((item) => item.active !== false) : [];
+  const minutesLookup = buildProblemMinutesLookup(getOtkSettings().problemTypes || []);
+  const leaders = users.filter((item) => isAdminRole(item.role) || isManagerRole(item.role));
+  const leaderKeys = buildAlignedDepartmentLeaderKeySet(leaders);
+
+  const monthlyRecords = records.filter((entry) => toDateKey(entry.date).startsWith(targetMonthPrefix));
+  const leaderMonthlyRecords = monthlyRecords.filter((entry) => {
+    const ownerKey = normalizeAlignedDepartmentPersonKey(entry.handledBy || entry.createdBy);
+    return ownerKey && leaderKeys.has(ownerKey);
+  });
+
+  const workloadSplit = monthlyRecords.reduce(
+    (accumulator, entry) => {
+      if (isAlignedAdditionalDepartmentWorkEntry(entry)) {
+        accumulator.extra += 1;
+      } else {
+        accumulator.core += 1;
+      }
+      return accumulator;
+    },
+    { core: 0, extra: 0 }
+  );
+
+  const workdaysElapsed = countAlignedDepartmentWorkdays(targetYear, targetMonth, now);
+  const leaderDailyAverageRaw = workdaysElapsed ? leaderMonthlyRecords.length / workdaysElapsed : 0;
+  const leaderDailyFlow = roundAlignedDepartmentMetric(leaderDailyAverageRaw);
+  const leaderCount = leaders.length || 1;
+  const perEmployeeDailyFlow = roundAlignedDepartmentMetric(leaderDailyAverageRaw / leaderCount);
+  const monthlyLeaderMinutes = leaderMonthlyRecords.reduce((sum, entry) => sum + getEntryEstimatedMinutes(entry, minutesLookup), 0);
+  const estimatedMinutes = workdaysElapsed ? Math.round(monthlyLeaderMinutes / workdaysElapsed) : 0;
+  const perEmployeeMinutes = leaderCount ? Math.round(estimatedMinutes / leaderCount) : 0;
+  const totalLeaderWorkMinutesPerDay = leaders.reduce((sum, leader) => sum + getUserWorkdayMinutes(leader), 0);
+  const perEmployeeCapacityMinutes = leaderCount ? Math.round(totalLeaderWorkMinutesPerDay / leaderCount) : 0;
+  const forecast = forecastAlignedDepartmentNextMonth(records, targetYear, targetMonth, minutesLookup);
+
+  return {
+    coreTrackCount: workloadSplit.core,
+    extraTrackCount: workloadSplit.extra,
+    coreShare: monthlyRecords.length ? Math.round((workloadSplit.core / monthlyRecords.length) * 100) : 0,
+    extraShare: monthlyRecords.length ? Math.round((workloadSplit.extra / monthlyRecords.length) * 100) : 0,
+    monthlyTracks: monthlyRecords.length,
+    monthLabel,
+    leaderDailyFlow,
+    estimatedDailyTime: formatAlignedDepartmentDuration(estimatedMinutes),
+    employeeFlowMeta: `${leaderCount} ${pluralizeAlignedDepartmentEmployees(leaderCount)} orasida har biriga o'rtacha ${perEmployeeDailyFlow} trek`,
+    employeeTimeMeta: `${leaderCount} ${pluralizeAlignedDepartmentEmployees(leaderCount)} orasida har biriga o'rtacha ${formatAlignedDepartmentDuration(perEmployeeMinutes)} / me'yor ${formatAlignedDepartmentDuration(perEmployeeCapacityMinutes)}`,
+    nextMonthForecast: forecast.total,
+    nextMonthChangePct: forecast.changePct,
+    forecastMeta: `${forecast.label} uchun taxmin • ${formatAlignedDepartmentDuration(forecast.estimatedMinutes)}`,
+    forecast,
+  };
+}
+
+function normalizeAlignedDepartmentPersonKey(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/['`‘’"]/g, '')
+    .replace(/o‘|o'|g‘|g'/g, (match) => (match.startsWith('o') ? 'o' : 'g'))
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function buildAlignedDepartmentLeaderKeySet(users) {
+  const values = new Set();
+  users.forEach((item) => {
+    const full = normalizeAlignedDepartmentPersonKey(item.full_name);
+    const username = normalizeAlignedDepartmentPersonKey(item.username);
+    [full, username].filter(Boolean).forEach((value) => {
+      values.add(value);
+      value
+        .split(' ')
+        .map((part) => part.trim())
+        .filter((part) => part.length >= 4)
+        .forEach((part) => values.add(part));
+    });
+  });
+
+  values.add('jaloldin');
+  values.add('jaloliddin');
+  values.add('jallolidin');
+  values.add('mirzakbarov jaloldin');
+
+  return values;
+}
+
+function isAlignedAdditionalDepartmentWorkEntry(entry) {
+  const haystack = normalizeAlignedDepartmentPersonKey(
+    [
+      entry.problemType,
+      entry.department,
+      entry.requestSource,
+      entry.comment,
+      entry.status,
+      entry.trackCode,
+    ].join(' ')
+  );
+
+  const additionalPatterns = [
+    '102',
+    'qoplab',
+    'kompens',
+    'musodara',
+    'inventar',
+    'adashgan',
+    'moliya',
+    'tolov',
+    'to lov',
+    'operator',
+    'zapros',
+    'zayavka',
+    'zayavkalar',
+    'raqobatni rivojlantirish',
+    'istemolchilar huquqlari',
+    'qomita',
+    'qo mita',
+    'vozvrat',
+    'relog',
+    'fargo',
+    '32057',
+    '62025',
+    '006',
+    'filialga yonaltirish',
+    'filialga yonaltir',
+    'yonaltirish',
+    'yonaltir',
+    'baza',
+    'botda korinmagan',
+    'sortirovka id si chiqmagan',
+  ];
+
+  return additionalPatterns.some((pattern) => haystack.includes(pattern));
+}
+
+function countAlignedDepartmentWorkdays(year, month, referenceDate) {
+  const cursor = new Date(year, month, 1);
+  const isCurrentPeriod = year === referenceDate.getFullYear() && month === referenceDate.getMonth();
+  const end = isCurrentPeriod
+    ? new Date(year, month, referenceDate.getDate())
+    : new Date(year, month + 1, 0);
+  let total = 0;
+
+  while (cursor <= end) {
+    const day = cursor.getDay();
+    if (day !== 0 && day !== 6) {
+      total += 1;
+    }
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  return total || 1;
+}
+
+function roundAlignedDepartmentMetric(value) {
+  return Math.round((Number(value) || 0) * 10) / 10;
+}
+
+function formatAlignedDepartmentDuration(totalMinutes) {
+  if (!totalMinutes) return '0 soat';
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (!hours) return `${minutes} daqiqa`;
+  if (!minutes) return `${hours} soat`;
+  return `${hours} soat ${minutes} daqiqa`;
+}
+
+function getAlignedDepartmentMonthLabel(monthIndex) {
+  const months = ['Yanvar', 'Fevral', 'Mart', 'Aprel', 'May', 'Iyun', 'Iyul', 'Avgust', 'Sentabr', 'Oktabr', 'Noyabr', 'Dekabr'];
+  return months[monthIndex] || `Oy ${monthIndex + 1}`;
+}
+
+function pluralizeAlignedDepartmentEmployees(count) {
+  return count === 1 ? 'hodim' : 'hodim';
+}
+
+function forecastAlignedDepartmentNextMonth(records, year, month, minutesLookup = new Map()) {
+  const counts = new Map();
+  records.forEach((entry) => {
+    const key = toDateKey(entry.date).slice(0, 7);
+    if (!key) return;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  });
+
+  const currentKey = `${year}-${String(month + 1).padStart(2, '0')}`;
+  const previousKeys = [];
+  for (let offset = 0; offset < 4; offset += 1) {
+    const cursor = new Date(year, month - offset, 1);
+    previousKeys.push(`${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}`);
+  }
+
+  const currentValue = counts.get(currentKey) || 0;
+  const previousValue = counts.get(previousKeys[1]) || currentValue;
+  const recentValues = previousKeys.map((key) => counts.get(key) || 0);
+  const recentAverage = recentValues.length ? recentValues.reduce((sum, value) => sum + value, 0) / recentValues.length : 0;
+  const overallAverage = counts.size
+    ? Array.from(counts.values()).reduce((sum, value) => sum + value, 0) / counts.size
+    : 0;
+  const trend = currentValue - previousValue;
+
+  const blended = (recentAverage * 0.5) + (overallAverage * 0.35) + (currentValue * 0.15) + (trend * 0.25);
+  const total = Math.max(0, Math.round(blended));
+  const nextDate = new Date(year, month + 1, 1);
+  const changePct = currentValue > 0
+    ? Math.round(((total - currentValue) / currentValue) * 100)
+    : (total > 0 ? 100 : 0);
+
+  const currentMonthMinutes = records
+    .filter((entry) => toDateKey(entry.date).startsWith(currentKey))
+    .reduce((sum, entry) => sum + getEntryEstimatedMinutes(entry, minutesLookup), 0);
+  const averageMinutes = currentValue ? (currentMonthMinutes / currentValue) : 0;
+
+  return {
+    label: `${getAlignedDepartmentMonthLabel(nextDate.getMonth())} ${nextDate.getFullYear()}`,
+    total,
+    changePct,
+    currentValue,
+    previousValue,
+    recentAverage: roundAlignedDepartmentMetric(recentAverage),
+    overallAverage: roundAlignedDepartmentMetric(overallAverage),
+    trend,
+    estimatedMinutes: Math.round(total * averageMinutes),
+    drivers: buildAlignedDepartmentForecastDrivers({ currentValue, previousValue, recentAverage, overallAverage, trend, total }),
+  };
+}
+
+function buildAlignedDepartmentForecastDrivers({ currentValue, previousValue, recentAverage, overallAverage, trend, total }) {
+  const drivers = [];
+
+  if (trend < 0) {
+    drivers.push({
+      tone: 'negative',
+      title: "Joriy oy oldingi oydan past",
+      value: `${Math.abs(trend)} trek`,
+      description: `Oldingi oyda ${previousValue} ta, joriy oyda ${currentValue} ta trek qayd etilgan.`,
+    });
+  } else if (trend > 0) {
+    drivers.push({
+      tone: 'positive',
+      title: "Joriy oy oldingi oydan yuqori",
+      value: `${trend} trek`,
+      description: `Oldingi oyda ${previousValue} ta, joriy oyda ${currentValue} ta trek qayd etilgan.`,
+    });
+  }
+
+  const recentGap = roundAlignedDepartmentMetric(currentValue - recentAverage);
+  if (recentGap < 0) {
+    drivers.push({
+      tone: 'negative',
+      title: "So'nggi 4 oy o'rtachasidan past",
+      value: `${Math.abs(recentGap)} trek`,
+      description: `So'nggi 4 oy o'rtachasi ${roundAlignedDepartmentMetric(recentAverage)} ta bo'lib, joriy oy bundan past kelyapti.`,
+    });
+  } else if (recentGap > 0) {
+    drivers.push({
+      tone: 'positive',
+      title: "So'nggi 4 oy o'rtachasidan yuqori",
+      value: `${recentGap} trek`,
+      description: `So'nggi 4 oy o'rtachasi ${roundAlignedDepartmentMetric(recentAverage)} ta bo'lib, joriy oy bundan yuqori kelyapti.`,
+    });
+  }
+
+  const overallGap = roundAlignedDepartmentMetric(total - overallAverage);
+  drivers.push({
+    tone: overallGap >= 0 ? 'positive' : 'negative',
+    title: 'Umumiy tarixiy fon',
+    value: `${roundAlignedDepartmentMetric(overallAverage)} trek`,
+    description: `Prognoz umumiy tarix bo'yicha o'rtacha ${roundAlignedDepartmentMetric(overallAverage)} trek atrofidagi fonni ham hisobga oladi.`,
+  });
+
+  if (!drivers.length) {
+    drivers.push({
+      tone: 'neutral',
+      title: 'Barqaror holat',
+      value: '0',
+      description: "Joriy oy va oldingi trend o'rtasida keskin farq yo'q, prognoz neytral holatda tuzildi.",
+    });
+  }
+
+  return drivers;
+}
+
+function buildProblemMinutesLookup(problemTypes = []) {
+  return new Map(
+    (problemTypes || [])
+      .map((item) => ({
+        name: String(item?.name || '').trim().toLowerCase(),
+        minutes: Math.max(0, Number(item?.minutes) || 0),
+      }))
+      .filter((item) => item.name)
+      .map((item) => [item.name, item.minutes])
+  );
+}
+
+function getEntryEstimatedMinutes(entry, minutesLookup) {
+  const key = String(entry?.problemType || '').trim().toLowerCase();
+  if (!key) return 0;
+  return Math.max(0, Number(minutesLookup.get(key)) || 0);
+}
+
+function parseWorkTimeToMinutes(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const [hoursText, minutesText = '0'] = raw.split(':');
+  const hours = Number(hoursText);
+  const minutes = Number(minutesText);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  return (hours * 60) + minutes;
+}
+
+const DEFAULT_LUNCH_BREAK_MINUTES = 60;
+
+function getUserWorkdayMinutes(user) {
+  const startMinutes = parseWorkTimeToMinutes(user?.workStart);
+  const endMinutes = parseWorkTimeToMinutes(user?.workEnd);
+  if (startMinutes == null || endMinutes == null || endMinutes <= startMinutes) return 0;
+  return Math.max(0, (endMinutes - startMinutes) - DEFAULT_LUNCH_BREAK_MINUTES);
+}
+
+function countBusinessDaysInRange(fromDate, toDate) {
+  if (!(fromDate instanceof Date) || !(toDate instanceof Date)) return 0;
+  const start = new Date(fromDate.getFullYear(), fromDate.getMonth(), fromDate.getDate());
+  const end = new Date(toDate.getFullYear(), toDate.getMonth(), toDate.getDate());
+  if (end < start) return 0;
+
+  let total = 0;
+  const cursor = new Date(start);
+  while (cursor <= end) {
+    const day = cursor.getDay();
+    if (day !== 0 && day !== 6) total += 1;
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return total;
+}
+
+function resolveEmployeeStatsRange(range, entries = []) {
+  if (range?.from || range?.to) {
+    const from = range?.from ? new Date(`${range.from}T00:00:00`) : (range?.to ? new Date(`${range.to}T00:00:00`) : null);
+    const to = range?.to ? new Date(`${range.to}T00:00:00`) : (range?.from ? new Date(`${range.from}T00:00:00`) : null);
+    return { from, to };
+  }
+
+  if (!entries.length) return { from: null, to: null };
+
+  const timestamps = entries
+    .map((entry) => new Date(entry?.date))
+    .map((date) => date.getTime())
+    .filter((value) => Number.isFinite(value));
+
+  if (!timestamps.length) return { from: null, to: null };
+
+  return {
+    from: new Date(Math.min(...timestamps)),
+    to: new Date(Math.max(...timestamps)),
+  };
 }
 
 function DepartmentCard({ item }) {
@@ -1941,23 +3207,10 @@ function DepartmentCard({ item }) {
   );
 }
 
-function RatioRow({ label, value, percent, barClass, textClass }) {
-  return (
-    <div>
-      <div className="mb-1.5 flex items-center justify-between gap-3 text-xs">
-        <span className="font-medium text-slate-500 dark:text-slate-400">{label}</span>
-        <span className={clsx('font-semibold', textClass)}>{value}</span>
-      </div>
-      <div className="h-2 overflow-hidden rounded-full bg-white ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-800">
-        <div className={clsx('h-full rounded-full', barClass)} style={{ width: `${Math.min(100, percent)}%` }} />
-      </div>
-    </div>
-  );
-}
-
 function buildEmployeeStats(range, recordsSource = [], usersSource = []) {
   const records = filterRecordsByEmployeeRange(recordsSource, range);
   const users = usersSource;
+  const minutesLookup = buildProblemMinutesLookup(getOtkSettings().problemTypes || []);
   const employeeUsers = users.filter((user) => isAdminRole(user.role) || isManagerRole(user.role));
   const distributionUsers = employeeUsers.filter((user) => !isAdminRole(user.role));
   const fallbackDistributionUsers = distributionUsers.length ? distributionUsers : employeeUsers;
@@ -2040,6 +3293,18 @@ function buildEmployeeStats(range, recordsSource = [], usersSource = []) {
       const active = entries.filter((entry) => entry.status !== 'Yopildi').length;
       const highRisk = entries.filter((entry) => entry.status !== 'Yopildi' && getWaitingDays(entry.date) >= 5).length;
       const total = entries.length;
+      const totalMinutes = entries.reduce((sum, entry) => sum + getEntryEstimatedMinutes(entry, minutesLookup), 0);
+      const resolvedMinutes = entries
+        .filter((entry) => entry.status === 'Yopildi')
+        .reduce((sum, entry) => sum + getEntryEstimatedMinutes(entry, minutesLookup), 0);
+      const periodRange = resolveEmployeeStatsRange(range, entries);
+      const workdays = periodRange.from && periodRange.to ? countBusinessDaysInRange(periodRange.from, periodRange.to) : 0;
+      const dailyWorkMinutes = getUserWorkdayMinutes(user);
+      const capacityMinutes = workdays * dailyWorkMinutes;
+      const averageTrackMinutes = total ? Math.round(totalMinutes / total) : 0;
+      const normTracks = averageTrackMinutes ? Math.round(capacityMinutes / averageTrackMinutes) : 0;
+      const efficiencyRate = capacityMinutes ? Math.round((resolvedMinutes / capacityMinutes) * 100) : 0;
+      const loadRate = capacityMinutes ? Math.round((totalMinutes / capacityMinutes) * 100) : 0;
 
       return {
         id: user.id,
@@ -2053,6 +3318,14 @@ function buildEmployeeStats(range, recordsSource = [], usersSource = []) {
         active,
         highRisk,
         resolve_rate: total ? Math.round((resolved / total) * 100) : 0,
+        totalMinutes,
+        resolvedMinutes,
+        capacityMinutes,
+        averageTrackMinutes,
+        normTracks,
+        efficiencyRate,
+        loadRate,
+        workScheduleLabel: dailyWorkMinutes ? `${user.workStart || '09:00'} - ${user.workEnd || '18:00'}` : '-',
         entries: entries.sort((a, b) => new Date(b.date) - new Date(a.date)),
       };
     })
@@ -2076,6 +3349,14 @@ function buildEmployeeStats(range, recordsSource = [], usersSource = []) {
       active,
       highRisk,
       resolve_rate: unassignedEntries.length ? Math.round((resolved / unassignedEntries.length) * 100) : 0,
+      totalMinutes: unassignedEntries.reduce((sum, entry) => sum + getEntryEstimatedMinutes(entry, minutesLookup), 0),
+      resolvedMinutes: unassignedEntries.filter((entry) => entry.status === 'Yopildi').reduce((sum, entry) => sum + getEntryEstimatedMinutes(entry, minutesLookup), 0),
+      capacityMinutes: 0,
+      averageTrackMinutes: 0,
+      normTracks: 0,
+      efficiencyRate: 0,
+      loadRate: 0,
+      workScheduleLabel: '-',
       entries: unassignedEntries.sort((a, b) => new Date(b.date) - new Date(a.date)),
     });
   }
@@ -2098,28 +3379,58 @@ function buildDuplicateGroups(records, range) {
     if (!groups.has(key)) {
       groups.set(key, {
         trackCode: entry.trackCode,
-        count: 0,
-        activeCount: 0,
-        archivedCount: 0,
+        entries: [],
       });
     }
 
     const bucket = groups.get(key);
-    bucket.count += 1;
-    if (entry.archiveStatus === 'archived' || entry.status === 'Yopildi') {
-      bucket.archivedCount += 1;
-    } else {
-      bucket.activeCount += 1;
-    }
+    bucket.entries.push(entry);
   });
 
   return Array.from(groups.values())
+    .map((item) => ({
+      trackCode: item.trackCode,
+      count: item.entries.length,
+      activeCount: item.entries.filter((entry) => entry.archiveStatus !== 'archived' && entry.status !== 'Yopildi').length,
+      archivedCount: item.entries.filter((entry) => entry.archiveStatus === 'archived' || entry.status === 'Yopildi').length,
+      entries: item.entries,
+    }))
     .filter((item) => item.count > 1)
+    .filter((item) => !findCompensatedRecoveryPair(item.entries))
     .sort((a, b) => b.count - a.count || a.trackCode.localeCompare(b.trackCode));
 }
 
 function normalizeTrackKey(value) {
   return String(value || '').trim().toLowerCase();
+}
+
+function findCompensatedRecoveryPair(entries = []) {
+  const sorted = entries
+    .slice()
+    .sort((left, right) => resolveEntrySortTime(left) - resolveEntrySortTime(right) || String(left.id).localeCompare(String(right.id)));
+  let latestPair = null;
+  let latestCompensation = null;
+
+  sorted.forEach((entry) => {
+    if (normalizeName(entry.problemType).includes('qoplab berilgan')) {
+      latestCompensation = entry;
+      return;
+    }
+
+    if (latestCompensation && latestCompensation.id !== entry.id) {
+      latestPair = { compensationEntry: latestCompensation, foundEntry: entry };
+    }
+  });
+
+  return latestPair;
+}
+
+function resolveEntrySortTime(entry) {
+  return [entry?.date, entry?.importedAt, entry?.updatedAt]
+    .map((value) => new Date(value))
+    .map((value) => value.getTime())
+    .find((value) => Number.isFinite(value))
+    ?? Number.MAX_SAFE_INTEGER;
 }
 
 function summarizeEmployees(employees) {

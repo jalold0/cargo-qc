@@ -1,17 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { AlertTriangle, Archive, CheckCircle2, Download, FileSpreadsheet, Package, Pencil, Plus, Search, Trash2, Upload, X } from 'lucide-react';
+import { AlertTriangle, Archive, Building2, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Clock, Download, Eye, FileSpreadsheet, Filter, MessageSquare, Package, Pencil, Plus, Search, Send, Trash2, Truck, Upload, X } from 'lucide-react';
 import { format } from 'date-fns';
 import toast from 'react-hot-toast';
 import { clsx } from 'clsx';
 import {
-  archiveEntriesForDate,
   deleteOtkEntry,
   getOtkArchive,
   getOtkEntries,
   importOtkEntries,
   subscribeToOtkData,
-  toDateKey,
 } from '../services/localData';
 import { useAuthStore } from '../store/authStore';
 import { isAdminRole } from '../services/access';
@@ -40,6 +38,11 @@ export default function ComplaintsPage() {
   const [archive, setArchive] = useState(() => getOtkArchive());
   const [search, setSearch] = useState('');
   const [view, setView] = useState('active');
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [filterStatus, setFilterStatus] = useState('all');
+  const [filterProblem, setFilterProblem] = useState('all');
+  const [filterSource, setFilterSource] = useState('all');
+  const [filterDepartment, setFilterDepartment] = useState('all');
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [importMode, setImportMode] = useState('merge');
@@ -52,19 +55,52 @@ export default function ComplaintsPage() {
 
   const visibleSource = view === 'archive' ? archive : entries;
 
+  // Filter dropdownlari uchun aktiv treklardan unique qiymatlarni olish
+  const filterOptions = useMemo(() => {
+    const collect = (key) => {
+      const set = new Set();
+      [...entries, ...archive].forEach((entry) => {
+        const value = entry?.[key];
+        if (value) set.add(value);
+      });
+      return Array.from(set).sort();
+    };
+    return {
+      statuses: collect('status'),
+      problems: collect('problemType'),
+      sources: collect('requestSource'),
+      departments: collect('department'),
+    };
+  }, [entries, archive]);
+
   const filteredEntries = useMemo(() => {
     const query = search.trim().toLowerCase();
-    if (!query) return visibleSource;
-    return visibleSource.filter((entry) =>
-      [entry.trackCode, entry.problemType, entry.department, entry.requestSource, entry.status, entry.comment, entry.priority, entry.handledBy]
+    return visibleSource.filter((entry) => {
+      if (filterStatus !== 'all' && entry.status !== filterStatus) return false;
+      if (filterProblem !== 'all' && entry.problemType !== filterProblem) return false;
+      if (filterSource !== 'all' && entry.requestSource !== filterSource) return false;
+      if (filterDepartment !== 'all' && entry.department !== filterDepartment) return false;
+      if (!query) return true;
+      return [entry.trackCode, entry.problemType, entry.department, entry.requestSource, entry.status, entry.comment, entry.priority, entry.handledBy]
         .filter(Boolean)
-        .some((value) => value.toLowerCase().includes(query))
-    );
-  }, [visibleSource, search]);
+        .some((value) => value.toLowerCase().includes(query));
+    });
+  }, [visibleSource, search, filterStatus, filterProblem, filterSource, filterDepartment]);
+
+  const activeFilterCount = useMemo(() => {
+    return [filterStatus, filterProblem, filterSource, filterDepartment].filter((v) => v !== 'all').length;
+  }, [filterStatus, filterProblem, filterSource, filterDepartment]);
+
+  const resetFilters = () => {
+    setFilterStatus('all');
+    setFilterProblem('all');
+    setFilterSource('all');
+    setFilterDepartment('all');
+  };
 
   useEffect(() => {
     setPage(1);
-  }, [search, view]);
+  }, [search, view, filterStatus, filterProblem, filterSource, filterDepartment]);
 
   const pageCount = Math.max(1, Math.ceil(filteredEntries.length / ITEMS_PER_PAGE));
 
@@ -112,18 +148,6 @@ export default function ComplaintsPage() {
 
     return subscribeToOtkData(sync, { debounceMs: 70 });
   }, []);
-
-  const archiveToday = () => {
-    const todayCount = entries.filter((entry) => toDateKey(entry.date) === toDateKey(new Date())).length;
-    if (!todayCount) {
-      toast.error(t('noTracksYet'));
-      return;
-    }
-    const result = archiveEntriesForDate(new Date(), { actor: user });
-    setEntries(result.remaining);
-    setArchive(getOtkArchive());
-    toast.success(`${result.archived} ${t('archive')}`);
-  };
 
   const openImportPicker = () => {
     setImportModalOpen(true);
@@ -205,67 +229,49 @@ export default function ComplaintsPage() {
   };
 
   return (
-    <div className="space-y-4 animate-fade-in">
-      <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-slate-950 dark:text-white">{t('complaintsTitle')}</h1>
-          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-            {t('total')}: {entries.length} ta, {t('visible')}: {filteredEntries.length} ta trek
-            {archive.length > 0 && `, ${t('archive')}: ${archive.length} ta`}
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-1 dark:border-slate-700 dark:bg-slate-950">
-            {[
-              ['active', t('active')],
-              ['archive', t('archive')],
-            ].map(([key, label]) => (
-              <button
-                key={key}
-                onClick={() => setView(key)}
-                className={clsx(
-                  'rounded-md px-3 py-1.5 text-sm font-medium transition',
-                  view === key
-                    ? 'bg-white text-slate-950 shadow-sm dark:bg-slate-800 dark:text-white'
-                    : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
-                )}
-              >
-                {label}
-              </button>
-            ))}
+    <div className="space-y-3 animate-fade-in">
+      {/* KOMPAKT HEADER — title + amallar inline */}
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 text-white shadow-md shadow-blue-500/30">
+              <Package size={18} />
+            </div>
+            <div className="min-w-0">
+              <h1 className="text-base font-bold tracking-tight text-slate-950 dark:text-white">{t('complaintsTitle')}</h1>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                {t('total')}: <b>{entries.length}</b>
+                {archive.length > 0 && <> · {t('archive')}: <b>{archive.length}</b></>}
+                {' · '} {t('visible')}: <b>{filteredEntries.length}</b>
+              </p>
+            </div>
           </div>
-          <button
-            onClick={archiveToday}
-            disabled={!entries.length}
-            className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
-          >
-            <Archive size={16} />
-            {t('archiveToday')}
-          </button>
-          <button
-            onClick={exportExcel}
-            disabled={!filteredEntries.length}
-            className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
-          >
-            <FileSpreadsheet size={16} />
-            Excel
-          </button>
-          {isAdmin && (
+          <div className="ml-auto flex flex-wrap gap-1.5">
+            {isAdmin && (
+              <button
+                onClick={openImportPicker}
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+              >
+                <Upload size={13} />
+                Import
+              </button>
+            )}
             <button
-              onClick={openImportPicker}
-              className="inline-flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-700 transition hover:bg-blue-100 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-300 dark:hover:bg-blue-500/20"
+              onClick={exportExcel}
+              disabled={!filteredEntries.length}
+              className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
             >
-              <Upload size={16} />
-              {t('importExcel')}
+              <Download size={13} />
+              Export
             </button>
-          )}
-          <Link
-            to="/complaints/new"
-            className="inline-flex items-center gap-2 rounded-lg bg-slate-950 px-3 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 dark:bg-white dark:text-slate-950 dark:hover:bg-slate-200"
-          >
-            <Plus size={16} />
-            {t('newEntry')}
-          </Link>
+            <Link
+              to="/complaints/new"
+              className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1.5 text-xs font-bold text-white shadow-sm transition hover:bg-emerald-700"
+            >
+              <Plus size={13} />
+              {t('newEntry')}
+            </Link>
+          </div>
         </div>
       </div>
 
@@ -310,136 +316,189 @@ export default function ComplaintsPage() {
         </div>
       )}
 
-      <div className="relative">
-        <Search size={17} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-        <input
-          value={search}
-          onChange={(event) => setSearch(event.target.value)}
-          placeholder={t('searchComplaints')}
-          className="w-full rounded-xl border border-slate-200 bg-white py-3 pl-10 pr-4 text-sm outline-none transition focus:border-slate-400 focus:ring-4 focus:ring-slate-200/70 dark:border-slate-700 dark:bg-slate-900 dark:text-white dark:focus:ring-slate-800"
-        />
-      </div>
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+        {/* Toolbar: Search + Faol/Arxiv toggle + Filtr button */}
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <div className="relative flex-1">
+            <Search size={17} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder={t('searchComplaints') || "Qidirish: trek yoki izoh..."}
+              className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-10 pr-10 text-sm outline-none transition focus:border-slate-400 focus:ring-4 focus:ring-slate-200/70 dark:border-slate-700 dark:bg-slate-950 dark:text-white dark:focus:ring-slate-800"
+            />
+            {search ? (
+              <button
+                type="button"
+                onClick={() => setSearch('')}
+                className="absolute right-3 top-1/2 -translate-y-1/2 rounded-lg p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+                title={t('clear')}
+              >
+                <X size={16} />
+              </button>
+            ) : null}
+          </div>
 
-      <div className="rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-slate-200 bg-slate-50 text-left dark:border-slate-800 dark:bg-slate-950/80">
-                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('date')}</th>
-                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">TREK</th>
-                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('problem')}</th>
-                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('department')}</th>
-                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('source')}</th>
-                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('takenBy')}</th>
-                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('status')}</th>
-                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('priority')}</th>
-                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('comment')}</th>
-                <th className="px-4 py-3" />
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {filteredEntries.length === 0 ? (
-                <tr>
-                  <td colSpan={10} className="px-4 py-16 text-center text-slate-400">
-                    <Package size={38} className="mx-auto mb-3 opacity-40" />
-                    <p>{t('noTracksYet')}</p>
-                  </td>
-                </tr>
-              ) : (
-                paginatedEntries.map((entry) => (
-                  <tr key={entry.id} className="transition hover:bg-slate-50 dark:hover:bg-slate-800/50">
-                    <td className="whitespace-nowrap px-4 py-3 text-slate-500 dark:text-slate-400">
-                      {format(new Date(entry.date), 'dd.MM.yyyy')}
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-3 font-mono font-semibold">
-                      {view === 'active' ? (
-                        <Link to={`/complaints/${entry.id}`} className="text-slate-950 transition hover:text-sky-600 dark:text-white dark:hover:text-sky-300">
-                          {entry.trackCode}
-                        </Link>
-                      ) : (
-                        <span className="text-slate-950 dark:text-white">{entry.trackCode}</span>
-                      )}
-                    </td>
-                    <td className="min-w-48 px-4 py-3 text-slate-700 dark:text-slate-200">{entry.problemType}</td>
-                    <td className="whitespace-nowrap px-4 py-3 text-slate-600 dark:text-slate-300">{entry.department}</td>
-                    <td className="whitespace-nowrap px-4 py-3 text-slate-600 dark:text-slate-300">{entry.requestSource || '-'}</td>
-                    <td className="whitespace-nowrap px-4 py-3 text-slate-600 dark:text-slate-300">{entry.handledBy || '-'}</td>
-                    <td className="whitespace-nowrap px-4 py-3">
-                      <span className={clsx('inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ring-1', STATUS_STYLE[entry.status])}>
-                        {valueLabel(entry.status)}
-                      </span>
-                    </td>
-                    <td className={clsx('whitespace-nowrap px-4 py-3 font-medium', PRIORITY_STYLE[entry.priority])}>
-                      {valueLabel(entry.priority)}
-                    </td>
-                    <td className="min-w-64 px-4 py-3 text-slate-500 dark:text-slate-400">{entry.comment || '-'}</td>
-                    <td className="px-4 py-3 text-right">
-                      <div className="relative inline-flex items-center gap-1">
-                        {view === 'active' && (
-                          <Link
-                            to={`/complaints/${entry.id}`}
-                            className="rounded-lg p-1.5 text-slate-400 transition hover:bg-sky-50 hover:text-sky-600 dark:hover:bg-sky-500/10"
-                            title={t('edit')}
-                          >
-                            <Pencil size={16} />
-                          </Link>
-                        )}
-                        <button
-                          onClick={(event) => {
-                            const rect = event.currentTarget.getBoundingClientRect();
-                            setDeleteConfirm((current) =>
-                              current?.id === entry.id
-                                ? null
-                                : {
-                                    id: entry.id,
-                                    x: Math.min(rect.right - 288, window.innerWidth - 304),
-                                    y: rect.bottom + 8,
-                                  }
-                            );
-                          }}
-                          className="rounded-lg p-1.5 text-slate-400 transition hover:bg-rose-50 hover:text-rose-500 dark:hover:bg-rose-500/10"
-                          title={t('delete')}
-                        >
-                          <Trash2 size={16} />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-        {filteredEntries.length > 0 && (
-          <div className="flex flex-col gap-3 border-t border-slate-200 px-4 py-3 dark:border-slate-800 sm:flex-row sm:items-center sm:justify-between">
-            <p className="text-sm text-slate-500 dark:text-slate-400">
-              {t('showing')} {Math.min((page - 1) * ITEMS_PER_PAGE + 1, filteredEntries.length)}-
-              {Math.min(page * ITEMS_PER_PAGE, filteredEntries.length)} / {filteredEntries.length}
-            </p>
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-slate-500 dark:text-slate-400">
-                {t('page')} {page} / {pageCount}
-              </span>
-              <button
-                type="button"
-                onClick={() => setPage((current) => Math.max(1, current - 1))}
-                disabled={page === 1}
-                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
-              >
-                {t('previous')}
-              </button>
-              <button
-                type="button"
-                onClick={() => setPage((current) => Math.min(pageCount, current + 1))}
-                disabled={page === pageCount}
-                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
-              >
-                {t('next')}
-              </button>
+          <div className="flex items-center gap-2">
+            <div className="inline-flex rounded-xl border border-slate-200 bg-slate-50 p-1 dark:border-slate-700 dark:bg-slate-950">
+              {[
+                ['active', t('active') || 'Faol'],
+                ['archive', t('archive') || 'Arxivlangan'],
+              ].map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setView(key)}
+                  className={clsx(
+                    'rounded-lg px-4 py-1.5 text-sm font-medium transition',
+                    view === key
+                      ? 'bg-emerald-600 text-white shadow-sm'
+                      : 'text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white'
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
             </div>
+
+            <button
+              type="button"
+              onClick={() => setFiltersOpen((open) => !open)}
+              className={clsx(
+                'inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-medium transition',
+                filtersOpen || activeFilterCount > 0
+                  ? 'border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300'
+                  : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800'
+              )}
+            >
+              <Filter size={16} />
+              Filtr
+              {activeFilterCount > 0 && (
+                <span className="inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-emerald-600 px-1.5 text-[11px] font-bold text-white">
+                  {activeFilterCount}
+                </span>
+              )}
+            </button>
+          </div>
+        </div>
+
+        {/* Filter dropdownlari paneli */}
+        {filtersOpen && (
+          <div className="mt-4 border-t border-slate-200 pt-4 dark:border-slate-700">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <FilterSelect
+                label="Status"
+                value={filterStatus}
+                onChange={setFilterStatus}
+                options={filterOptions.statuses}
+              />
+              <FilterSelect
+                label="Muammo turi"
+                value={filterProblem}
+                onChange={setFilterProblem}
+                options={filterOptions.problems}
+              />
+              <FilterSelect
+                label="Manba"
+                value={filterSource}
+                onChange={setFilterSource}
+                options={filterOptions.sources}
+              />
+              <FilterSelect
+                label="Mas'ul bo'lim"
+                value={filterDepartment}
+                onChange={setFilterDepartment}
+                options={filterOptions.departments}
+              />
+            </div>
+            {activeFilterCount > 0 && (
+              <div className="mt-3 flex items-center justify-between text-xs">
+                <span className="text-slate-500 dark:text-slate-400">
+                  {activeFilterCount} ta filtr qo'llanilgan · {filteredEntries.length} ta natija
+                </span>
+                <button
+                  type="button"
+                  onClick={resetFilters}
+                  className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 font-semibold text-rose-600 transition hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-500/10"
+                >
+                  <X size={12} />
+                  Tozalash
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
+
+      {/* CARD GRID — kompakt */}
+      {filteredEntries.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-12 text-center shadow-sm dark:border-slate-700 dark:bg-slate-900">
+          <Package size={40} className="mx-auto mb-2 text-slate-300 dark:text-slate-600" />
+          <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">{t('noTracksYet')}</p>
+          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Filtrlarni o'zgartiring yoki yangi murojaat qo'shing</p>
+        </div>
+      ) : (
+        <>
+          <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+            {paginatedEntries.map((entry) => (
+              <ComplaintCard
+                key={entry.id}
+                entry={entry}
+                t={t}
+                valueLabel={valueLabel}
+                canEdit={view === 'active' || isAdmin}
+                onDelete={(event) => {
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  setDeleteConfirm((current) =>
+                    current?.id === entry.id
+                      ? null
+                      : {
+                          id: entry.id,
+                          x: Math.min(rect.right - 288, window.innerWidth - 304),
+                          y: rect.bottom + 8,
+                        }
+                  );
+                }}
+              />
+            ))}
+          </section>
+
+          {pageCount > 1 && (
+            <div className="flex flex-col gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                {Math.min((page - 1) * ITEMS_PER_PAGE + 1, filteredEntries.length)}
+                {' – '}
+                {Math.min(page * ITEMS_PER_PAGE, filteredEntries.length)}
+                {' / '}
+                <span className="font-bold text-slate-700 dark:text-slate-200">{filteredEntries.length}</span>
+              </p>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setPage((current) => Math.max(1, current - 1))}
+                  disabled={page === 1}
+                  className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                >
+                  <ChevronLeft size={14} />
+                  {t('previous')}
+                </button>
+                <span className="rounded-md bg-slate-100 px-2 py-1 text-xs font-bold text-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                  {page} / {pageCount}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setPage((current) => Math.min(pageCount, current + 1))}
+                  disabled={page === pageCount}
+                  className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                >
+                  {t('next')}
+                  <ChevronRight size={14} />
+                </button>
+              </div>
+            </div>
+          )}
+        </>
+      )}
 
       {deleteConfirm && (
         <div
@@ -652,6 +711,149 @@ function escapeHtml(value) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#039;');
+}
+
+// ============================================================
+// Complaint Card — kompakt murojaat kartasi (grid uchun)
+// ============================================================
+function ComplaintCard({ entry, t, valueLabel, canEdit, onDelete }) {
+  const statusStyle = STATUS_STYLE[entry.status] || STATUS_STYLE.Jarayonda;
+  const priorityStyle = PRIORITY_STYLE[entry.priority] || 'text-slate-500';
+
+  return (
+    <article className="group relative flex flex-col gap-2 rounded-xl border border-slate-200 bg-white p-3 shadow-sm transition hover:border-blue-300 hover:shadow-md dark:border-slate-800 dark:bg-slate-900 dark:hover:border-blue-500/30">
+      {/* Row 1: trek + status */}
+      <div className="flex items-start justify-between gap-1.5">
+        <div className="flex min-w-0 items-center gap-1.5">
+          {canEdit ? (
+            <Link
+              to={`/complaints/${entry.id}`}
+              title={t('edit')}
+              className="shrink-0 rounded-md p-1 text-slate-400 transition hover:bg-blue-50 hover:text-blue-700 dark:hover:bg-blue-500/15 dark:hover:text-blue-300"
+            >
+              <Eye size={14} />
+            </Link>
+          ) : (
+            <span className="shrink-0 rounded-md p-1 text-slate-400 opacity-40">
+              <Eye size={14} />
+            </span>
+          )}
+          {canEdit ? (
+            <Link to={`/complaints/${entry.id}`} className="truncate font-mono text-xs font-bold text-slate-950 transition hover:text-blue-700 dark:text-white dark:hover:text-blue-300" title={entry.trackCode}>
+              {entry.trackCode}
+            </Link>
+          ) : (
+            <span className="truncate font-mono text-xs font-bold text-slate-950 dark:text-white" title={entry.trackCode}>
+              {entry.trackCode}
+            </span>
+          )}
+        </div>
+        <span className={clsx('shrink-0 rounded-md px-1.5 py-0.5 text-[9px] font-extrabold uppercase ring-1', statusStyle)}>
+          {valueLabel(entry.status)}
+        </span>
+      </div>
+
+      {/* Row 2: Date + Department */}
+      <div className="flex items-center justify-between gap-2 text-[10px] text-slate-500 dark:text-slate-400">
+        <span className="inline-flex items-center gap-1">
+          <Clock size={10} />
+          {format(new Date(entry.date), 'dd.MM.yyyy')}
+        </span>
+        <span className="inline-flex items-center gap-1 truncate" title={entry.department}>
+          <Building2 size={10} />
+          <span className="truncate">{entry.department || '—'}</span>
+        </span>
+      </div>
+
+      {/* Row 3: Problem + Priority */}
+      <div className="space-y-0.5 border-t border-slate-100 pt-2 dark:border-slate-800">
+        <div className="flex items-start justify-between gap-2">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">Problem</span>
+          <span className={clsx('shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold', priorityStyle.includes('text-') ? `bg-slate-100 dark:bg-slate-800 ${priorityStyle}` : priorityStyle)}>
+            {valueLabel(entry.priority)}
+          </span>
+        </div>
+        <div className="text-xs font-semibold text-slate-900 dark:text-white line-clamp-1" title={entry.problemType}>
+          {entry.problemType || '—'}
+        </div>
+      </div>
+
+      {/* Row 4: Source + handledBy (kompakt) */}
+      {(entry.requestSource || entry.handledBy) && (
+        <div className="flex items-center justify-between gap-2 text-[10px] text-slate-500 dark:text-slate-400">
+          {entry.requestSource && (
+            <span className="inline-flex items-center gap-1 truncate" title={entry.requestSource}>
+              <Send size={10} />
+              <span className="truncate">{entry.requestSource}</span>
+            </span>
+          )}
+          {entry.handledBy && (
+            <span className="inline-flex items-center gap-1 truncate font-semibold text-blue-700 dark:text-blue-300" title={entry.handledBy}>
+              👤 <span className="truncate">{entry.handledBy}</span>
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Row 5: Comment (faqat bor bo'lsa) */}
+      {entry.comment && (
+        <div className="border-t border-slate-100 pt-2 dark:border-slate-800">
+          <div className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+            <MessageSquare size={9} />
+            Izoh
+          </div>
+          <p className="mt-0.5 line-clamp-2 text-[11px] text-slate-600 dark:text-slate-300" title={entry.comment}>
+            {entry.comment}
+          </p>
+        </div>
+      )}
+
+      {/* Actions */}
+      <div className="mt-auto flex items-center justify-end gap-1 border-t border-slate-100 pt-2 dark:border-slate-800">
+        {canEdit && (
+          <Link
+            to={`/complaints/${entry.id}`}
+            title={t('edit')}
+            className="rounded-md p-1 text-slate-400 transition hover:bg-sky-50 hover:text-sky-600 dark:hover:bg-sky-500/15 dark:hover:text-sky-300"
+          >
+            <Pencil size={14} />
+          </Link>
+        )}
+        <button
+          type="button"
+          onClick={onDelete}
+          title={t('delete')}
+          className="rounded-md p-1 text-slate-400 transition hover:bg-rose-50 hover:text-rose-500 dark:hover:bg-rose-500/15"
+        >
+          <Trash2 size={14} />
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function FilterSelect({ label, value, onChange, options }) {
+  return (
+    <div>
+      <label className="mb-1.5 block text-xs font-bold text-slate-700 dark:text-slate-200">{label}</label>
+      <div className="relative">
+        <select
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          className="w-full appearance-none rounded-xl border border-slate-200 bg-white px-3 py-2.5 pr-9 text-sm text-slate-900 outline-none transition focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100 dark:border-slate-700 dark:bg-slate-950 dark:text-white dark:focus:ring-emerald-500/10"
+        >
+          <option value="all">Hammasi</option>
+          {options.map((opt) => (
+            <option key={opt} value={opt}>{opt}</option>
+          ))}
+        </select>
+        <ChevronDown
+          size={16}
+          className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400"
+        />
+      </div>
+    </div>
+  );
 }
 
 function ImportReportStat({ label, value, tone = 'slate', compact = false }) {

@@ -3,30 +3,65 @@ import { Link, Outlet, NavLink, useLocation, useNavigate } from 'react-router-do
 import { useAuthStore, useLanguageStore, useThemeStore } from '../store/authStore';
 import { getAllOtkRecords, getOtkEntries, getWaitingDays, subscribeToOtkData } from '../services/localData';
 import { canAccess, isAdminRole } from '../services/access';
+import { APP_BUILD_DATE, APP_VERSION } from '../services/appVersion';
 import { useT } from '../i18n';
 import {
   LayoutDashboard,
-  FileText,
-  Users,
-  Building2,
+  MessageSquareWarning,
+  Truck,
+  Headphones,
+  Wallet,
+  Bot,
+  ListChecks,
+  Network,
   Settings,
   LogOut,
   Menu,
   Bell,
   Sun,
   Moon,
-  MapPin,
+  Circle,
+  Sparkles,
+  ChevronDown,
+  User as UserIcon,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 
+const NOTIFICATION_SEEN_STORAGE_KEY = 'cargo-qc-notification-seen';
+
+// Ideal tartib:
+// 1. Dashboard — bosh sahifa (analitika)
+// 2. Murojaatlar — asosiy ish oqimi
+// 3. Trek kuzatuv — trek bo'yicha izlash
+// 4. 102 — modul (mijoz murojaatlari)
+// 5. 104 — Moliya (moliyaviy yozuvlar)
+// 6. AI yordamchi (yordamchi vositalar)
+// 7. Bo'limlar tartibi (admin)
+// 8. Sozlamalar (yakuniy)
+// PERFORMANCE: har bir route uchun prefetch funksiyasi.
+// Sichqoncha link ustiga tushganda chunk avvaldan yuklab qo'yiladi —
+// foydalanuvchi bosganda Suspense fallback ko'rinmaydi.
+// Vite import() promise'ini cache qiladi, takroriy chaqirilsa no-op.
 const NAV_ITEMS = [
-  { path: '/dashboard', labelKey: 'dashboard', icon: LayoutDashboard, accessKey: 'dashboard' },
-  { path: '/complaints', labelKey: 'complaints', icon: FileText, accessKey: 'complaints' },
-  { path: '/tracking', labelKey: 'tracking', icon: MapPin, accessKey: 'tracking' },
-  { path: '/users', labelKey: 'users', icon: Users, accessKey: 'users' },
-  { path: '/branches', labelKey: 'departmentsSources', icon: Building2, accessKey: 'branches' },
-  { path: '/settings', labelKey: 'settings', icon: Settings, accessKey: 'settings' },
+  { path: '/dashboard',         labelKey: 'dashboard',        icon: LayoutDashboard,       accessKey: 'dashboard',     prefetch: () => import('../pages/DashboardPage') },
+  { path: '/complaints',        labelKey: 'complaints',       icon: MessageSquareWarning,  accessKey: 'complaints',    prefetch: () => import('../pages/ComplaintsPage') },
+  { path: '/tracking',          labelKey: 'tracking',         icon: Truck,                 accessKey: 'tracking',      prefetch: () => import('../pages/TrackingPage') },
+  { path: '/module-102',        labelKey: 'module102',        icon: Headphones,            accessKey: 'module102',     prefetch: () => import('../pages/Module102Page') },
+  { path: '/compensated',       labelKey: 'compensatedLoads', icon: Wallet,                accessKey: 'compensated',   prefetch: () => import('../pages/CompensatedLoadsPage') },
+  { path: '/my-in-progress',    labelKey: 'myInProgress',     icon: ListChecks,            accessKey: 'compensated',   prefetch: () => import('../pages/MyInProgressPage') },
+  { path: '/assistant-ai',      labelKey: 'assistantAi',      icon: Bot,                   accessKey: 'assistantAi',   prefetch: () => import('../pages/AssistantAiPage') },
+  { path: '/department-order',  labelKey: 'departmentOrder',  icon: Network,               accessKey: 'settings',      prefetch: () => import('../pages/DepartmentOrderPage') },
+  { path: '/settings',          labelKey: 'settings',         icon: Settings,              accessKey: 'settings',      prefetch: () => import('../pages/SettingsPage') },
 ];
+
+// Prefetch'ni faqat 1 marta chaqirish uchun cache
+const _prefetchedRoutes = new Set();
+function prefetchRoute(path, prefetchFn) {
+  if (_prefetchedRoutes.has(path) || !prefetchFn) return;
+  _prefetchedRoutes.add(path);
+  // Promise'ni await qilmaymiz — fon rejimida ishlasin
+  prefetchFn().catch(() => _prefetchedRoutes.delete(path));
+}
 
 const ROLE_LABELS = {
   admin: 'Admin',
@@ -52,15 +87,52 @@ export default function DashboardLayout() {
   const [activeToolbarMenu, setActiveToolbarMenu] = useState(null);
   const [entries, setEntries] = useState(() => getOtkEntries());
   const [allRecords, setAllRecords] = useState(() => getAllOtkRecords());
+  const [seenNotificationKeys, setSeenNotificationKeys] = useState({});
   const { user, logout } = useAuthStore();
-  const { theme, toggleTheme } = useThemeStore();
+  const { theme, setTheme } = useThemeStore();
   const { language, setLanguage } = useLanguageStore();
   const t = useT();
   const location = useLocation();
   const navigate = useNavigate();
   const notifications = useMemo(() => buildNotifications({ entries, allRecords, user, t }), [entries, allRecords, user, t]);
-  const notificationGroups = useMemo(() => groupNotifications(notifications, t), [notifications, t]);
-  const isWideContentRoute = ['/complaints', '/tracking', '/branches'].some((path) => location.pathname.startsWith(path));
+  const notificationStorageAccountKey = useMemo(
+    () => normalizeName(user?.username || user?.full_name || user?.id || 'default'),
+    [user]
+  );
+  const notificationsWithState = useMemo(
+    () => notifications.map((item) => ({ ...item, seen: Boolean(seenNotificationKeys[item.readKey]) })),
+    [notifications, seenNotificationKeys]
+  );
+  const unseenNotifications = useMemo(
+    () => notificationsWithState.filter((item) => !item.seen),
+    [notificationsWithState]
+  );
+  const notificationGroups = useMemo(() => groupNotifications(notificationsWithState, t), [notificationsWithState, t]);
+  const isWideContentRoute = ['/complaints', '/tracking', '/compensated', '/module-102', '/assistant-ai'].some((path) => location.pathname.startsWith(path));
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(NOTIFICATION_SEEN_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : {};
+      setSeenNotificationKeys(parsed?.[notificationStorageAccountKey] && typeof parsed[notificationStorageAccountKey] === 'object'
+        ? parsed[notificationStorageAccountKey]
+        : {});
+    } catch (error) {
+      console.warn('Failed to restore notification seen state', error);
+      setSeenNotificationKeys({});
+    }
+  }, [notificationStorageAccountKey]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(NOTIFICATION_SEEN_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : {};
+      parsed[notificationStorageAccountKey] = seenNotificationKeys;
+      localStorage.setItem(NOTIFICATION_SEEN_STORAGE_KEY, JSON.stringify(parsed));
+    } catch (error) {
+      console.warn('Failed to persist notification seen state', error);
+    }
+  }, [notificationStorageAccountKey, seenNotificationKeys]);
 
   const handleLogout = () => {
     logout();
@@ -79,6 +151,43 @@ export default function DashboardLayout() {
     return () => window.removeEventListener('qc-close-popovers', closeMenus);
   }, []);
 
+  // Supabase Realtime — bo'limlararo sinxron ishlash.
+  // Faqat 1 marta ulanadi (DashboardLayout butun ilova umri davomida mavjud).
+  // Har remote o'zgarishni custom event'ga proksi qiladi — subscribeToOtkData
+  // singleton hub'i automatically pickup qiladi.
+  //
+  // PERFORMANCE: avval env tekshiriladi — agar Supabase sozlanmagan bo'lsa,
+  // 208 kB heavy chunk umuman yuklanmaydi (localStorage rejimida default holat).
+  useEffect(() => {
+    const hasSupabaseEnv = Boolean(
+      import.meta.env.VITE_SUPABASE_URL && import.meta.env.VITE_SUPABASE_ANON_KEY
+    );
+    if (!hasSupabaseEnv) return;
+
+    let unsubscribes = [];
+    (async () => {
+      try {
+        const realtime = await import('../services/supabaseRealtime');
+        if (!realtime.isRealtimeEnabled) return;
+        const proxy = (table) => () => {
+          window.dispatchEvent(new CustomEvent('cargo-qc-data-changed', {
+            detail: { key: `remote:${table}` },
+          }));
+        };
+        unsubscribes.push(realtime.subscribeToComplaints(proxy('complaints')));
+        unsubscribes.push(realtime.subscribeToCompensated(proxy('compensated')));
+        unsubscribes.push(realtime.subscribeToAssistantAi(proxy('assistant_ai')));
+        unsubscribes.push(realtime.subscribeToSettings(proxy('settings')));
+      } catch (error) {
+        // Realtime ulanmagan bo'lsa — silent fallback (localStorage bilan ishlash davom etadi)
+      }
+    })();
+    return () => {
+      unsubscribes.forEach((fn) => { try { fn(); } catch {} });
+      unsubscribes = [];
+    };
+  }, []);
+
   useEffect(() => {
     setActiveToolbarMenu(null);
   }, [location.pathname, location.search]);
@@ -94,7 +203,19 @@ export default function DashboardLayout() {
 
   const openToolbarMenu = (menu) => {
     window.dispatchEvent(new CustomEvent('qc-close-popovers', { detail: { source: 'toolbar' } }));
-    setActiveToolbarMenu((current) => (current === menu ? null : menu));
+    setActiveToolbarMenu((current) => {
+      const next = current === menu ? null : menu;
+      if (menu === 'notifications' && next === 'notifications' && unseenNotifications.length > 0) {
+        setSeenNotificationKeys((previous) => {
+          const updated = { ...previous };
+          unseenNotifications.forEach((item) => {
+            updated[item.readKey] = true;
+          });
+          return updated;
+        });
+      }
+      return next;
+    });
   };
 
   const SidebarContent = () => (
@@ -110,11 +231,14 @@ export default function DashboardLayout() {
       </div>
 
       <nav className="flex-1 space-y-1 overflow-y-auto px-2 py-4">
-        {visibleItems.map(({ path, labelKey, icon: Icon }) => (
+        {visibleItems.map(({ path, labelKey, icon: Icon, prefetch }) => (
           <NavLink
             key={path}
             to={path}
             onClick={() => setMobileSidebarOpen(false)}
+            onMouseEnter={() => prefetchRoute(path, prefetch)}
+            onFocus={() => prefetchRoute(path, prefetch)}
+            onTouchStart={() => prefetchRoute(path, prefetch)}
             className={({ isActive }) =>
               clsx(
                 'flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all',
@@ -130,34 +254,25 @@ export default function DashboardLayout() {
         ))}
       </nav>
 
+      {/* Sidebar pastida faqat versiya badge —
+          user profile endi topbar'ning o'ng tarafidagi avatar menyusida */}
       <div className="border-t border-slate-200/50 p-3 dark:border-slate-800/70">
-        <div className={clsx('flex items-center gap-3', !sidebarOpen && 'justify-center')}>
-          <ProfileAvatar user={user} rounded="rounded-full" />
-
-          {sidebarOpen && (
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-medium text-slate-950 dark:text-white">{user?.full_name}</p>
-              <span
-                className={clsx(
-                  'mt-1 inline-flex rounded-md px-1.5 py-0.5 text-xs font-medium ring-1',
-                  ROLE_COLORS[user?.role] || DEFAULT_ROLE_COLOR
-                )}
-              >
-                {ROLE_LABELS[user?.role] || user?.role}
-              </span>
-            </div>
-          )}
-
-          {sidebarOpen && (
-            <button
-              onClick={handleLogout}
-              title={t('logout')}
-              className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-rose-50 hover:text-rose-500 dark:hover:bg-rose-900/20"
-            >
-              <LogOut size={16} />
-            </button>
-          )}
-        </div>
+        {sidebarOpen ? (
+          <div
+            className="flex items-center justify-between gap-2 rounded-md bg-slate-50 px-2.5 py-1.5 text-[10px] font-medium uppercase tracking-wider text-slate-500 dark:bg-slate-900 dark:text-slate-400"
+            title={`Build: ${APP_BUILD_DATE}`}
+          >
+            <span>Version</span>
+            <span className="font-mono tabular-nums">v{APP_VERSION}</span>
+          </div>
+        ) : (
+          <p
+            className="text-center font-mono text-[10px] tabular-nums text-slate-400 dark:text-slate-500"
+            title={`v${APP_VERSION} · ${APP_BUILD_DATE}`}
+          >
+            v{APP_VERSION}
+          </p>
+        )}
       </div>
     </div>
   );
@@ -201,7 +316,14 @@ export default function DashboardLayout() {
           <div className="flex-1" />
 
           <div className="flex items-center gap-1.5 rounded-2xl border border-slate-200/70 bg-white/72 p-1.5 shadow-[0_10px_24px_rgba(15,23,42,0.06)] backdrop-blur-xl dark:border-slate-800/80 dark:bg-slate-900/62">
-            <ThemeToggle theme={theme} toggleTheme={toggleTheme} t={t} />
+            <ThemeSelect
+              theme={theme}
+              setTheme={setTheme}
+              t={t}
+              open={activeToolbarMenu === 'theme'}
+              onToggle={() => openToolbarMenu('theme')}
+              onClose={() => setActiveToolbarMenu(null)}
+            />
 
             <LanguageSelect
               language={language}
@@ -219,9 +341,9 @@ export default function DashboardLayout() {
               title={t('notifications')}
             >
               <Bell size={18} />
-              {notifications.length > 0 && (
+              {unseenNotifications.length > 0 && (
                 <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-bold text-white shadow-lg shadow-rose-500/30 ring-2 ring-white dark:ring-slate-900">
-                  {notifications.length > 9 ? '9+' : notifications.length}
+                  {unseenNotifications.length > 9 ? '9+' : unseenNotifications.length}
                 </span>
               )}
             </button>
@@ -248,7 +370,7 @@ export default function DashboardLayout() {
                   </div>
                 </div>
                 <div className="max-h-[420px] overflow-y-auto">
-                  {notifications.length === 0 ? (
+                  {notificationsWithState.length === 0 ? (
                     <p className="px-4 py-8 text-center text-sm text-slate-400">{t('noNotifications')}</p>
                   ) : (
                     notificationGroups
@@ -262,24 +384,39 @@ export default function DashboardLayout() {
                           </div>
                           {group.items.map((item) => (
                             <Link
-                              key={item.id}
+                              key={item.readKey}
                               to={item.path || `/complaints/${item.id}`}
                               onClick={() => setActiveToolbarMenu(null)}
-                              className="block px-4 py-3 transition hover:bg-slate-50 dark:hover:bg-slate-800/60"
+                              className={clsx(
+                                'block px-4 py-3 transition hover:bg-slate-50 dark:hover:bg-slate-800/60',
+                                item.seen && 'opacity-70'
+                              )}
                             >
                               <div className="flex items-start justify-between gap-3">
                                 <div className="min-w-0">
                                   <p className="text-sm font-semibold text-slate-950 dark:text-white">{item.title}</p>
                                   <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">{item.message}</p>
                                 </div>
-                                <span
-                                  className={clsx(
-                                    'shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1',
-                                    item.badgeTone
-                                  )}
-                                >
-                                  {item.badge}
-                                </span>
+                                <div className="flex shrink-0 flex-col items-end gap-1.5">
+                                  <span
+                                    className={clsx(
+                                      'rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1',
+                                      item.badgeTone
+                                    )}
+                                  >
+                                    {item.badge}
+                                  </span>
+                                  <span
+                                    className={clsx(
+                                      'rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1',
+                                      item.seen
+                                        ? 'bg-slate-100 text-slate-500 ring-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700'
+                                        : 'bg-blue-50 text-blue-700 ring-blue-200 dark:bg-blue-500/10 dark:text-blue-300 dark:ring-blue-500/20'
+                                    )}
+                                  >
+                                    {item.seen ? t('notificationSeen') : t('notificationNew')}
+                                  </span>
+                                </div>
                               </div>
                             </Link>
                           ))}
@@ -289,6 +426,91 @@ export default function DashboardLayout() {
                 </div>
               </div>
             )}
+            </div>
+
+            {/* User profile menyu — topbar o'ng tarafda */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => openToolbarMenu('userMenu')}
+                aria-haspopup="menu"
+                aria-expanded={activeToolbarMenu === 'userMenu'}
+                className="inline-flex h-10 items-center gap-2 rounded-xl pl-1.5 pr-2.5 text-slate-700 transition hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-800"
+              >
+                <ProfileAvatar user={user} rounded="rounded-lg" />
+                <span className="hidden flex-col text-left leading-tight md:flex">
+                  <span className="max-w-[140px] truncate text-sm font-semibold text-slate-900 dark:text-white">
+                    {user?.full_name || user?.username}
+                  </span>
+                  <span className="text-[10px] font-medium uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                    {ROLE_LABELS[user?.role] || user?.role}
+                  </span>
+                </span>
+                <ChevronDown size={14} className="hidden text-slate-400 md:block" />
+              </button>
+
+              {activeToolbarMenu === 'userMenu' && (
+                <div className="qc-panel absolute right-0 top-12 z-[360] w-[280px] overflow-hidden rounded-2xl shadow-2xl shadow-slate-950/12 dark:shadow-black/40">
+                  {/* Header — avatar + ism + rol */}
+                  <div className="border-b border-slate-100 px-4 py-3 dark:border-slate-800">
+                    <div className="flex items-center gap-3">
+                      <ProfileAvatar user={user} rounded="rounded-xl" />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-semibold text-slate-900 dark:text-white">
+                          {user?.full_name || user?.username}
+                        </p>
+                        <span
+                          className={clsx(
+                            'mt-1 inline-flex rounded-md px-1.5 py-0.5 text-[11px] font-medium ring-1',
+                            ROLE_COLORS[user?.role] || DEFAULT_ROLE_COLOR
+                          )}
+                        >
+                          {ROLE_LABELS[user?.role] || user?.role}
+                        </span>
+                      </div>
+                    </div>
+                    {user?.username && user?.full_name && (
+                      <p className="mt-2 truncate text-[11px] text-slate-500 dark:text-slate-400">
+                        @{user.username}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Actions */}
+                  <div className="p-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveToolbarMenu(null);
+                        navigate('/settings');
+                      }}
+                      className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-800"
+                    >
+                      <UserIcon size={16} className="text-slate-400" />
+                      <span>{t('profileSettings') || 'Profil va sozlamalar'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveToolbarMenu(null);
+                        handleLogout();
+                      }}
+                      className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm text-rose-600 transition hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-500/10"
+                    >
+                      <LogOut size={16} />
+                      <span>{t('logout')}</span>
+                    </button>
+                  </div>
+
+                  {/* Footer — versiya */}
+                  <div className="border-t border-slate-100 bg-slate-50/60 px-4 py-2 text-[10px] font-mono uppercase tracking-wider text-slate-500 dark:border-slate-800 dark:bg-slate-950/60 dark:text-slate-400">
+                    <div className="flex items-center justify-between">
+                      <span>Cargo QC</span>
+                      <span className="tabular-nums">v{APP_VERSION}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </header>
@@ -303,17 +525,54 @@ export default function DashboardLayout() {
   );
 }
 
-function ThemeToggle({ theme, toggleTheme, t }) {
-  const dark = theme === 'dark';
+function ThemeSelect({ theme, setTheme, t, open, onToggle, onClose }) {
+  const options = [
+    { value: 'light', label: t('themeLightShort'), title: t('lightMode'), icon: Sun },
+    { value: 'dark', label: t('themeDarkShort'), title: t('darkMode'), icon: Moon },
+    { value: 'graphite', label: t('themeGraphiteShort'), title: t('graphiteMode'), icon: Circle },
+    { value: 'aurora', label: t('themeAuroraShort'), title: t('auroraMode'), icon: Sparkles },
+  ];
+  const current = options.find((option) => option.value === theme) || options[0];
+  const CurrentIcon = current.icon;
 
   return (
-    <button
-      onClick={toggleTheme}
-      className="inline-flex h-10 w-10 items-center justify-center rounded-xl text-slate-500 transition hover:bg-blue-50 hover:text-blue-700 dark:hover:bg-slate-800 dark:hover:text-blue-300"
-      title={dark ? t('lightMode') : t('darkMode')}
-    >
-      {dark ? <Sun size={18} /> : <Moon size={18} />}
-    </button>
+    <div className="relative" title={t('chooseTheme')}>
+      <button
+        type="button"
+        onClick={onToggle}
+        className="inline-flex h-10 min-w-[96px] items-center justify-center gap-2 rounded-xl bg-slate-50 px-3 text-sm font-bold text-slate-700 ring-1 ring-slate-200/70 transition hover:bg-white hover:text-blue-700 hover:ring-blue-200 dark:bg-slate-950/60 dark:text-slate-200 dark:ring-slate-800 dark:hover:bg-slate-800 dark:hover:text-blue-300"
+      >
+        <CurrentIcon size={15} />
+        <span>{current.label}</span>
+      </button>
+
+      {open && (
+        <div className="absolute right-0 top-12 z-[360] w-48 overflow-hidden rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl shadow-slate-950/10 dark:border-slate-800 dark:bg-slate-900 dark:shadow-black/35">
+          {options.map((option) => {
+            const OptionIcon = option.icon;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => {
+                  setTheme(option.value);
+                  onClose();
+                }}
+                className={clsx(
+                  'flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-semibold transition',
+                  theme === option.value
+                    ? 'bg-blue-50 text-blue-700 dark:bg-blue-500/12 dark:text-blue-300'
+                    : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white'
+                )}
+              >
+                <OptionIcon size={15} />
+                <div className="min-w-0">{option.title}</div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -397,6 +656,7 @@ function buildNotifications({ entries, allRecords, user, t }) {
 
       return {
         id: entry.id,
+        readKey: `entry:${entry.id}:${entry.status}:${waitingDays}:${normalizeName(entry.handledBy)}:${normalizeName(entry.trackCode)}`,
         isOwner,
         kind: isOwner ? 'mine' : 'team',
         severity: waitingDays >= 5 ? 'critical' : waitingDays >= 2 ? 'warning' : 'healthy',
@@ -440,23 +700,24 @@ function buildDuplicateNotifications(records, t) {
     if (!groups.has(trackKey)) {
       groups.set(trackKey, {
         trackCode: entry.trackCode,
-        count: 0,
-        activeCount: 0,
-        archivedCount: 0,
+        entries: [],
       });
     }
 
     const bucket = groups.get(trackKey);
-    bucket.count += 1;
-    if (entry.archiveStatus === 'archived' || entry.status === 'Yopildi') {
-      bucket.archivedCount += 1;
-    } else {
-      bucket.activeCount += 1;
-    }
+    bucket.entries.push(entry);
   });
 
   const duplicates = Array.from(groups.values())
+    .map((group) => ({
+      trackCode: group.trackCode,
+      count: group.entries.length,
+      activeCount: group.entries.filter((entry) => entry.archiveStatus !== 'archived' && entry.status !== 'Yopildi').length,
+      archivedCount: group.entries.filter((entry) => entry.archiveStatus === 'archived' || entry.status === 'Yopildi').length,
+      entries: group.entries,
+    }))
     .filter((group) => group.count > 1)
+    .filter((group) => !findCompensatedRecoveryPair(group.entries))
     .sort((a, b) => b.count - a.count || a.trackCode.localeCompare(b.trackCode));
 
   if (!duplicates.length) return [];
@@ -466,6 +727,7 @@ function buildDuplicateNotifications(records, t) {
   return [
     {
       id: 'duplicate-summary',
+      readKey: `duplicate-summary:${duplicates.length}:${topTracks}`,
       isOwner: true,
       kind: 'critical',
       severity: 'critical',
@@ -502,4 +764,33 @@ function groupNotifications(items, t) {
   ];
 
   return groups.filter((group) => group.items.length > 0 || items.length === 0);
+}
+
+function findCompensatedRecoveryPair(entries = []) {
+  const sorted = entries
+    .slice()
+    .sort((left, right) => resolveEntrySortTime(left) - resolveEntrySortTime(right) || String(left.id).localeCompare(String(right.id)));
+  let latestPair = null;
+  let latestCompensation = null;
+
+  sorted.forEach((entry) => {
+    if (normalizeName(entry.problemType).includes('qoplab berilgan')) {
+      latestCompensation = entry;
+      return;
+    }
+
+    if (latestCompensation && latestCompensation.id !== entry.id) {
+      latestPair = { compensationEntry: latestCompensation, foundEntry: entry };
+    }
+  });
+
+  return latestPair;
+}
+
+function resolveEntrySortTime(entry) {
+  return [entry?.date, entry?.importedAt, entry?.updatedAt]
+    .map((value) => new Date(value))
+    .map((value) => value.getTime())
+    .find((value) => Number.isFinite(value))
+    ?? Number.MAX_SAFE_INTEGER;
 }
