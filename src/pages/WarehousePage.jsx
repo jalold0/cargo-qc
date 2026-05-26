@@ -59,12 +59,15 @@ export default function WarehousePage() {
     return subscribeToWarehouseReturns(sync);
   }, []);
 
-  // Bir martalik vozvrat migratsiya tekshiruvi
+  // Vozvrat migratsiya tekshiruvi.
+  // Eslatma: ilgari "migration done" bayrog'i bo'lishidan qat'i nazar,
+  // hozir candidates'ni tekshiramiz — chunki yangi tanib olish qoidasi
+  // (Ulug'bek hodimi) qo'shilgan; eski flag yangi nomzodlarni
+  // o'tkazib yuborgan bo'lishi mumkin.
   useEffect(() => {
-    if (isVozvratMigrationDone()) return;
     const { count } = previewVozvratCandidates();
     setMigrationCount(count);
-  }, []);
+  }, [items]);
 
   const runMigration = async (removeFromOtk) => {
     setMigrationLoading(true);

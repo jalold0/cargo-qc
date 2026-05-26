@@ -378,8 +378,37 @@ export function deleteWarehouseReturn(id) {
 // ============================================================
 const MIGRATION_KEY = 'cargo-qc-warehouse-vozvrat-migrated';
 
+// Vozvrat indikatorlari: problemType yoki mas'ul hodim nomi.
+// Bazada vozvrat treklari "Ulug'bek" nomli ombor hodimiga biriktirilgan,
+// shuning uchun u ham vozvrat sifatida tanib olinadi.
+const VOZVRAT_HANDLER_TOKENS = ['ulug', 'ulugbek', "ulug'bek", "ulug‘bek"];
+
 function isVozvratProblem(value) {
   return String(value || '').toLowerCase().includes('vozvrat');
+}
+
+function isWarehouseHandler(value) {
+  const v = String(value || '').toLowerCase().trim();
+  if (!v) return false;
+  return VOZVRAT_HANDLER_TOKENS.some((token) => v.includes(token));
+}
+
+// Universal vozvrat tanib olish: problemType "vozvrat" yoki
+// mas'ul hodim "Ulug'bek" (asosiy/handledBy/assignedTo/lockedBy maydonlari)
+function isVozvratEntry(entry) {
+  if (!entry || typeof entry !== 'object') return false;
+  if (isVozvratProblem(entry.problemType)) return true;
+  // Mas'ul hodim turli xil maydonlarda saqlanishi mumkin
+  if (
+    isWarehouseHandler(entry.handledBy) ||
+    isWarehouseHandler(entry.assignedTo) ||
+    isWarehouseHandler(entry.lockedBy) ||
+    isWarehouseHandler(entry.responsible) ||
+    isWarehouseHandler(entry.javobgar)
+  ) {
+    return true;
+  }
+  return false;
 }
 
 export function previewVozvratCandidates() {
@@ -390,7 +419,7 @@ export function previewVozvratCandidates() {
     const archive = archiveRaw ? JSON.parse(archiveRaw) : [];
     const all = [...(Array.isArray(active) ? active : []), ...(Array.isArray(archive) ? archive : [])];
 
-    const candidates = all.filter((entry) => isVozvratProblem(entry?.problemType));
+    const candidates = all.filter(isVozvratEntry);
     return { count: candidates.length, candidates };
   } catch {
     return { count: 0, candidates: [] };
@@ -471,12 +500,12 @@ export function migrateVozvratToWarehouse({ removeFromOtk = false } = {}) {
       const active = activeRaw ? JSON.parse(activeRaw) : [];
       const archive = archiveRaw ? JSON.parse(archiveRaw) : [];
 
-      // Vozvrat yozuvlarini topib, ID'larini yig'amiz
+      // Vozvrat yozuvlarini topib, ID'larini yig'amiz (problemType + Ulug'bek)
       const vozvratIds = [];
       const collect = (list) => {
         if (!Array.isArray(list)) return;
         list.forEach((e) => {
-          if (isVozvratProblem(e?.problemType) && e?.id) {
+          if (isVozvratEntry(e) && e?.id) {
             vozvratIds.push(e.id);
           }
         });
@@ -484,9 +513,9 @@ export function migrateVozvratToWarehouse({ removeFromOtk = false } = {}) {
       collect(active);
       collect(archive);
 
-      // Lokal cache'dan olib tashlash
+      // Lokal cache'dan olib tashlash (problemType yoki Ulug'bek hodimi)
       const filterFn = (list) =>
-        Array.isArray(list) ? list.filter((e) => !isVozvratProblem(e?.problemType)) : [];
+        Array.isArray(list) ? list.filter((e) => !isVozvratEntry(e)) : [];
 
       localStorage.setItem('cargo-qc-otk-entries', JSON.stringify(filterFn(active)));
       localStorage.setItem('cargo-qc-otk-archive', JSON.stringify(filterFn(archive)));
