@@ -2557,6 +2557,8 @@ function DateRangeFilter({ value, onChange, label }) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState(value);
   const [monthCursor, setMonthCursor] = useState(() => getInitialMonth(value));
+  const [popoverPos, setPopoverPos] = useState({ top: 0, right: 0 });
+  const buttonRef = useRef(null);
   const hasValue = value.from || value.to;
   const text = hasValue ? `${formatDateLabel(value.from) || '...'} - ${formatDateLabel(value.to) || '...'}` : label;
 
@@ -2575,10 +2577,37 @@ function DateRangeFilter({ value, onChange, label }) {
     return () => window.removeEventListener('qc-close-popovers', closePicker);
   }, [pickerId]);
 
+  // Popover ochiq paytda — scroll/resize'da position'ni yangilash
+  useEffect(() => {
+    if (!open || !buttonRef.current) return;
+    const updatePosition = () => {
+      if (!buttonRef.current) return;
+      const rect = buttonRef.current.getBoundingClientRect();
+      setPopoverPos({
+        top: rect.bottom + 8,
+        right: Math.max(8, window.innerWidth - rect.right),
+      });
+    };
+    updatePosition();
+    window.addEventListener('scroll', updatePosition, true);
+    window.addEventListener('resize', updatePosition);
+    return () => {
+      window.removeEventListener('scroll', updatePosition, true);
+      window.removeEventListener('resize', updatePosition);
+    };
+  }, [open]);
+
   const openPicker = () => {
     window.dispatchEvent(new CustomEvent('qc-close-popovers', { detail: { source: pickerId } }));
     setDraft(value);
     setMonthCursor(getInitialMonth(value));
+    if (buttonRef.current) {
+      const rect = buttonRef.current.getBoundingClientRect();
+      setPopoverPos({
+        top: rect.bottom + 8,
+        right: Math.max(8, window.innerWidth - rect.right),
+      });
+    }
     setOpen((current) => !current);
   };
 
@@ -2610,8 +2639,9 @@ function DateRangeFilter({ value, onChange, label }) {
   const days = buildCalendarDays(monthCursor);
 
   return (
-    <div className="relative z-[260] flex items-center gap-2">
+    <div className="flex items-center gap-2">
       <button
+        ref={buttonRef}
         type="button"
         onClick={openPicker}
         className={clsx(
@@ -2635,7 +2665,10 @@ function DateRangeFilter({ value, onChange, label }) {
       )}
 
       {open && (
-        <div className="absolute right-0 top-12 z-[420] w-[340px] rounded-2xl border border-slate-200 bg-white p-3 shadow-2xl shadow-slate-950/15 dark:border-slate-800 dark:bg-slate-900 dark:shadow-black/40">
+        <div
+          className="fixed z-[9999] w-[340px] rounded-2xl border border-slate-200 bg-white p-3 shadow-2xl shadow-slate-950/15 dark:border-slate-800 dark:bg-slate-900 dark:shadow-black/40"
+          style={{ top: `${popoverPos.top}px`, right: `${popoverPos.right}px` }}
+        >
           <div className="mb-3 flex items-center justify-between gap-3">
             <p className="text-sm font-semibold text-slate-950 dark:text-white">{label}</p>
             <button
