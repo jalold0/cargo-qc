@@ -187,8 +187,10 @@ export const DEFAULT_DEPARTMENT_ORDER_CONTENT = {
 
 export const STATUS_OPTIONS = ['Yopildi', 'Jarayonda', "Moliyaga yo'naltirildi"];
 
+// Faqat bitta super-admin kod ichida saqlanadi — Supabase tarmoq xato'sida
+// va birinchi marta boot vaqtida tizimga kirish imkonini beradi.
+// Barcha qolgan hodimlar Sozlamalar → Foydalanuvchilar (Supabase) bo'limida
+// boshqariladi va u yerdan sync qilinadi.
 export const DEFAULT_USERS = [
   { id: 1, username: 'jaloldin.mirzakbarov', password: 'admin123', full_name: 'Jaloldin Mirzakbarov', role: 'admin', active: true, avatarUrl: '', workStart: '09:00', workEnd: '18:00' },
-  { id: 2, username: 'operator1', password: 'op123', full_name: 'Operator', role: 'operator', active: true, avatarUrl: '', workStart: '', workEnd: '' },
-  { id: 3, username: 'supervisor1', password: 'sup123', full_name: 'Supervisor', role: 'supervisor', active: true, avatarUrl: '', workStart: '', workEnd: '' },
 ];

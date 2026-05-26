@@ -942,7 +942,33 @@ export function saveOtkSettings(settings) {
   scheduleSettingsRemoteSync(normalized);
 }
 
+// Bir martalik migratsiya: eski demo userlarni (operator1, supervisor1)
+// mahalliy cache'dan olib tashlash. Bu Supabase'da real hodimlar mavjud
+// bo'lganda foydalanuvchilarni adashtirmaslik uchun.
+const DEMO_USER_USERNAMES = new Set(['operator1', 'supervisor1']);
+let demoUsersCleanedUp = false;
+
+function cleanupLegacyDemoUsers() {
+  if (demoUsersCleanedUp) return;
+  demoUsersCleanedUp = true;
+  try {
+    const raw = readJson(USERS_KEY, []);
+    if (!Array.isArray(raw) || raw.length === 0) return;
+    const filtered = raw.filter((u) => {
+      const name = String(u?.username || '').trim().toLowerCase();
+      return !DEMO_USER_USERNAMES.has(name);
+    });
+    if (filtered.length !== raw.length) {
+      writeJson(USERS_KEY, filtered);
+      computedCache.users = { raw: null, value: null };
+    }
+  } catch {
+    // sokin xato
+  }
+}
+
 export function getSystemUsers() {
+  cleanupLegacyDemoUsers();
   hydrateUsersFromRemoteInBackground();
   const raw = getStorageRaw(USERS_KEY);
   if (computedCache.users.raw === raw && computedCache.users.value) {

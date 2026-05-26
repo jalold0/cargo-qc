@@ -38,22 +38,9 @@ const demoUsers = import.meta.env.DEV
         passwords: ['admin123', 'admin'],
         user: { id: 1, username: 'jaloldin.mirzakbarov', full_name: 'Jaloldin Mirzakbarov', role: 'admin' },
       },
-      operator: {
-        passwords: ['operator', 'op123'],
-        user: { id: 2, username: 'operator1', full_name: 'Operator', role: 'operator' },
-      },
-      operator1: {
-        passwords: ['op123', 'operator'],
-        user: { id: 2, username: 'operator1', full_name: 'Operator', role: 'operator' },
-      },
-      supervisor: {
-        passwords: ['supervisor', 'sup123'],
-        user: { id: 3, username: 'supervisor1', full_name: 'Supervisor', role: 'supervisor' },
-      },
-      supervisor1: {
-        passwords: ['sup123', 'supervisor'],
-        user: { id: 3, username: 'supervisor1', full_name: 'Supervisor', role: 'supervisor' },
-      },
+      // Eslatma: operator1/supervisor1 demo'lari olib tashlandi.
+      // Real hodimlar Sozlamalar → Foydalanuvchilar bo'limidan boshqariladi
+      // va Supabase orqali kelgan ma'lumotlar bilan tizimga kiradi.
     }
   : {};
 

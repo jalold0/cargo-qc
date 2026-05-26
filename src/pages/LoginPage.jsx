@@ -111,7 +111,7 @@ export default function LoginPage() {
             <form onSubmit={handleSubmit(onSubmit)} className="space-y-4" noValidate>
               <Input
                 label={t('username')}
-                placeholder="operator1"
+                placeholder="ism.familiya"
                 autoComplete="username"
                 required
                 leftIcon={User}
