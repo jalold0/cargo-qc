@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -365,13 +365,35 @@ function resolveDashboardStats(localStats, range, reportYear) {
   return DEMO_DATA;
 }
 
+// Joriy kalendar oy boshini ISO formatda qaytaradi: "2026-05-01"
+function getCurrentMonthStart() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  return `${year}-${month}-01`;
+}
+
+// Bugun ISO formatda: "2026-05-26"
+function getTodayIso() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 export default function DashboardPage() {
   const t = useT();
   const { user } = useAuthStore();
   const { language } = useLanguageStore();
   const currentDate = new Date();
   const currentYear = currentDate.getFullYear();
-  const [dateRange, setDateRange] = useState({ from: '', to: '' });
+  // DEFAULT: joriy kalendar oy (masalan 1 May - 26 May).
+  // User'lar kerak bo'lsa filtr orqali kengaytiradi.
+  const [dateRange, setDateRange] = useState(() => ({
+    from: getCurrentMonthStart(),
+    to: getTodayIso(),
+  }));
   const [employeeModalOpen, setEmployeeModalOpen] = useState(false);
   const [problemTypesModalOpen, setProblemTypesModalOpen] = useState(false);
   const [requestSourcesModalOpen, setRequestSourcesModalOpen] = useState(false);
@@ -584,14 +606,23 @@ export default function DashboardPage() {
   // ============================================================
   // Sana filtri o'zgarganda Supabase'dan o'sha oraliqni tortish
   // ------------------------------------------------------------
-  // Boot vaqtida faqat joriy oy yuklanadi (light). Foydalanuvchi sana
-  // filtrini o'zgartirganda — Supabase'dan o'sha sanalar oralig'idagi
-  // murojaatlar avtomatik tortiladi va merge qilinadi.
-  // Empty from/to (ikkalasi ham bo'sh) — hech narsa qilmaymiz (default holat).
+  // Boot vaqtida default joriy oy bo'lganligi sababli — hydrate boot
+  // chaqiruvi avtomatik shu sanalarni tortadi. Bu yerda foydalanuvchi
+  // filtrini O'ZGARTIRGANDA yangi oraliqni Supabase'dan olamiz.
+  // Birinchi mount'da skip qilamiz — boot hydration takrorlanmasin.
   // ============================================================
+  const initialDateRangeRef = useRef(true);
   useEffect(() => {
     const { from, to } = dateRange || {};
-    if (!from && !to) return; // Filter olib tashlangan — hech narsa qilmaymiz
+
+    // Birinchi mount — boot hydration allaqachon ishga tushgan, skip
+    if (initialDateRangeRef.current) {
+      initialDateRangeRef.current = false;
+      return;
+    }
+
+    // Filter olib tashlangan — mahalliy keshdan ko'rsatamiz, fetch shart emas
+    if (!from && !to) return;
 
     let cancelled = false;
     const toastId = toast.loading('Sana bo\'yicha yuklanmoqda…');
