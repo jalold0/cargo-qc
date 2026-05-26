@@ -739,24 +739,17 @@ export default function WarehousePage() {
               {migrationCount} ta vozvratni ko'chirish
             </h3>
             <p className="mt-2 text-sm text-slate-600 dark:text-slate-400">
-              Bu treklar Toshkent omboriga ko'chiriladi. Asl Murojaatlardan ham o'chirib tashlaysizmi?
+              Bu treklar Toshkent omboriga qo'shiladi. Murojaatlar bo'limidan
+              o'chirilmaydi — umumiy statistikada (JAMI TREKLAR) hisoblanishda davom etadi.
             </p>
             <div className="mt-4 flex flex-col gap-2">
               <button
                 type="button"
                 disabled={migrationLoading}
-                onClick={() => runMigration(true)}
+                onClick={() => runMigration(false)}
                 className="rounded-lg bg-amber-600 px-3 py-2 text-sm font-semibold text-white hover:bg-amber-700 disabled:opacity-60"
               >
-                Ko'chir va Murojaatlardan o'chir
-              </button>
-              <button
-                type="button"
-                disabled={migrationLoading}
-                onClick={() => runMigration(false)}
-                className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
-              >
-                Faqat ko'chir (Murojaatlarda ham qoldir)
+                {migrationLoading ? "Ko'chirilmoqda…" : "Ko'chir"}
               </button>
               <button
                 type="button"
