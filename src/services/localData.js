@@ -150,6 +150,7 @@ const computedCache = {
 };
 
 let complaintsRemoteHydrationStarted = false;
+let complaintsFullArchiveHydrationStarted = false; // /complaints → 'arxiv' tab uchun
 let complaintsRemoteSyncTimer = null;
 let compensatedRemoteHydrationStarted = false;
 let compensatedRemoteSyncTimer = null;
@@ -424,6 +425,58 @@ function hydrateComplaintsFromRemoteInBackground() {
       }
     }
   }, 0);
+}
+
+// ============================================================
+// FULL ARCHIVE HYDRATION
+// ------------------------------------------------------------
+// Boot paytida faqat 500 archive yozuv yuklanadi (light hydration).
+// To'liq archive (~19K) ComplaintsPage'da "Arxiv" tab bosilganda yuklanadi.
+// Bir martalik chaqiruv — natija localStorage'da saqlanadi.
+// ============================================================
+export async function hydrateFullArchiveFromRemote() {
+  if (typeof window === 'undefined') return { ok: false, reason: 'no-window' };
+  if (!supabase.isSupabaseEnabled) return { ok: false, reason: 'remote-disabled' };
+  if (complaintsFullArchiveHydrationStarted) return { ok: false, reason: 'already-loaded' };
+
+  complaintsFullArchiveHydrationStarted = true;
+  let success = false;
+
+  try {
+    // To'liq variant: archiveLimit yo'q → fetchAllPaginated ishlatiladi
+    const remote = await supabase.fetchComplaintsRemote({
+      includeArchive: true,
+      archiveLimit: null,
+    });
+
+    const localActive = normalizeEntries(decodeEntryCollection(readJson(ENTRIES_KEY, [])));
+    const localArchive = normalizeEntries(decodeEntryCollection(readJson(ARCHIVE_KEY, [])));
+    const merged = mergeComplaintSnapshots(
+      localActive,
+      localArchive,
+      remote.active || [],
+      remote.archive || [],
+    );
+
+    if (
+      JSON.stringify(localActive) !== JSON.stringify(merged.active) ||
+      JSON.stringify(localArchive) !== JSON.stringify(merged.archive)
+    ) {
+      replaceComplaintSnapshotsLocal(merged.active, merged.archive);
+    }
+
+    success = true;
+    return {
+      ok: true,
+      activeCount: merged.active.length,
+      archiveCount: merged.archive.length,
+    };
+  } catch (error) {
+    return { ok: false, reason: 'fetch-failed', error: String(error?.message || error) };
+  } finally {
+    // Muvaffaqiyatsiz bo'lsa — flag'ni qaytar, qayta urinish mumkin bo'lsin
+    if (!success) complaintsFullArchiveHydrationStarted = false;
+  }
 }
 
 function replaceCompensatedRegistryLocal(items) {
