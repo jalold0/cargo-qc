@@ -546,3 +546,105 @@ export async function testModule102SupabaseConnection() {
     return { ok: false, message: error instanceof Error ? error.message : 'Supabase module_102 connection failed.' };
   }
 }
+
+// ============================================================
+// TOSHKENT OMBORI — omborga qaytgan yuklar
+// ------------------------------------------------------------
+// warehouse_returns jadvali bilan ishlash.
+// Trek kiritilganda avtomatik 104 — Moliyada "Topilgan yuk"
+// sifatida ham yozib qo'yiladi (client tomonda — warehouseData.js).
+// ============================================================
+
+function toRemoteWarehouseReturn(entry) {
+  return {
+    id: String(entry.id || ''),
+    track_code: String(entry.trackCode || ''),
+    return_date: entry.returnDate || new Date().toISOString(),
+    problem_type: String(entry.problemType || ''),
+    responsible: String(entry.responsible || ''),
+    customer_phone: String(entry.customerPhone || ''),
+    customer_name: String(entry.customerName || ''),
+    note: String(entry.note || ''),
+    status: String(entry.status || 'qabul_qilindi'),
+    created_at: entry.createdAt || new Date().toISOString(),
+    updated_at: entry.updatedAt || new Date().toISOString(),
+  };
+}
+
+function fromRemoteWarehouseReturn(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    trackCode: row.track_code || '',
+    returnDate: row.return_date || new Date().toISOString(),
+    problemType: row.problem_type || '',
+    responsible: row.responsible || '',
+    customerPhone: row.customer_phone || '',
+    customerName: row.customer_name || '',
+    note: row.note || '',
+    status: row.status || 'qabul_qilindi',
+    createdAt: row.created_at || new Date().toISOString(),
+    updatedAt: row.updated_at || row.created_at || new Date().toISOString(),
+  };
+}
+
+export async function fetchWarehouseReturnsRemote({
+  dateFrom = null,
+  dateTo = null,
+} = {}) {
+  const filters = ['select=*', 'is_deleted=eq.false'];
+  if (dateFrom) filters.push(`return_date=gte.${encodeURIComponent(dateFrom)}`);
+  if (dateTo) filters.push(`return_date=lte.${encodeURIComponent(dateTo)}`);
+  filters.push('order=return_date.desc');
+
+  const rows = await fetchAllPaginated(`warehouse_returns?${filters.join('&')}`);
+  return Array.isArray(rows) ? rows.map(fromRemoteWarehouseReturn).filter(Boolean) : [];
+}
+
+export async function upsertWarehouseReturnRemote(entry) {
+  const payload = toRemoteWarehouseReturn(entry);
+  const rows = await supabaseRequest('warehouse_returns?on_conflict=id', {
+    method: 'POST',
+    headers: {
+      Prefer: 'resolution=merge-duplicates,return=representation',
+    },
+    body: JSON.stringify(payload),
+  });
+  return Array.isArray(rows) && rows[0] ? fromRemoteWarehouseReturn(rows[0]) : entry;
+}
+
+export async function bulkUpsertWarehouseReturnsRemote(entries = []) {
+  if (!Array.isArray(entries) || !entries.length) return [];
+  const payload = entries.map(toRemoteWarehouseReturn);
+  const rows = await supabaseRequest('warehouse_returns?on_conflict=id', {
+    method: 'POST',
+    headers: {
+      Prefer: 'resolution=merge-duplicates,return=representation',
+    },
+    body: JSON.stringify(payload),
+  });
+  return Array.isArray(rows) ? rows.map(fromRemoteWarehouseReturn).filter(Boolean) : [];
+}
+
+export async function deleteWarehouseReturnRemote(id) {
+  if (!id) return false;
+  // Soft delete
+  const rows = await supabaseRequest(
+    `warehouse_returns?id=eq.${encodeURIComponent(id)}`,
+    {
+      method: 'PATCH',
+      headers: { Prefer: 'return=minimal' },
+      body: JSON.stringify({ is_deleted: true, updated_at: new Date().toISOString() }),
+    },
+  );
+  return rows !== undefined;
+}
+
+export async function testWarehouseReturnsSupabaseConnection() {
+  try {
+    await supabaseRequest('warehouse_returns?select=id&limit=1');
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : 'Supabase warehouse_returns connection failed.' };
+  }
+}

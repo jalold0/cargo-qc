@@ -909,6 +909,10 @@ export function getOtkSettings() {
   const saved = readJson(SETTINGS_KEY, {});
   const value = {
     problemTypes: normalizeProblemTypes(saved.problemTypes?.length ? saved.problemTypes : DEFAULT_PROBLEM_TYPES),
+    // Toshkent ombori uchun alohida muammo turlari (foydalanuvchi qo'shadi/o'chiradi)
+    warehouseProblemTypes: Array.isArray(saved.warehouseProblemTypes)
+      ? saved.warehouseProblemTypes
+      : ['Yetkazib bera olmadi', 'Mijoz qabul qilmadi', "Manzil noto'g'ri", 'Qaytarib berildi', "Boshqa sabab"],
     departments: saved.departments?.length ? saved.departments : DEFAULT_DEPARTMENTS,
     requestSources: saved.requestSources?.length ? saved.requestSources : DEFAULT_REQUEST_SOURCES,
     roles: saved.roles?.length ? saved.roles : DEFAULT_ROLES,

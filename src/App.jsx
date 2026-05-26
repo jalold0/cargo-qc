@@ -27,6 +27,7 @@ const TrackingPage = lazy(() => import('./pages/TrackingPage'));
 const DepartmentOrderPage = lazy(() => import('./pages/DepartmentOrderPage'));
 const Module102Page = lazy(() => import('./pages/Module102Page'));
 const Module102DetailPage = lazy(() => import('./pages/Module102DetailPage'));
+const WarehousePage = lazy(() => import('./pages/WarehousePage'));
 
 import { canAccess } from './services/access';
 import { archiveClosedEntriesByDayEnd, getSystemUsers, publicUser, runAppDataMigrations } from './services/localData';
@@ -209,6 +210,11 @@ export default function App() {
             <Route path="module-102/:id" element={
               <ProtectedRoute accessKey="module102">
                 <Suspense fallback={<RouteFallback />}><Module102DetailPage /></Suspense>
+              </ProtectedRoute>
+            } />
+            <Route path="warehouse"    element={
+              <ProtectedRoute>
+                <Suspense fallback={<RouteFallback />}><WarehousePage /></Suspense>
               </ProtectedRoute>
             } />
             <Route path="settings"    element={

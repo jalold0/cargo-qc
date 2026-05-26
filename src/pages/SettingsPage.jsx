@@ -37,6 +37,7 @@ export default function SettingsPage() {
     };
   });
   const [problemDraft, setProblemDraft] = useState({ name: '', minutes: '' });
+  const [warehouseProblemInput, setWarehouseProblemInput] = useState('');
   const [departmentInput, setDepartmentInput] = useState('');
   const [sourceInput, setSourceInput] = useState('');
   const [roleInput, setRoleInput] = useState('');
@@ -117,6 +118,32 @@ export default function SettingsPage() {
       problemTypes: settings.problemTypes.filter((item) => item.name !== name),
     });
     toast.success(t('deleted'));
+  };
+
+  // ---- Toshkent ombori muammo turlari (alohida ro'yxat) ----
+  const addWarehouseProblemType = () => {
+    const name = warehouseProblemInput.trim();
+    if (!name) return;
+    const existing = settings.warehouseProblemTypes || [];
+    if (existing.some((item) => item.toLowerCase() === name.toLowerCase())) {
+      toast.error(t('duplicateName') || 'Bunday nom allaqachon bor');
+      return;
+    }
+    updateSettings({
+      ...settings,
+      warehouseProblemTypes: [...existing, name],
+    });
+    setWarehouseProblemInput('');
+    toast.success(t('added') || "Qo'shildi");
+  };
+
+  const removeWarehouseProblemType = (name) => {
+    const existing = settings.warehouseProblemTypes || [];
+    updateSettings({
+      ...settings,
+      warehouseProblemTypes: existing.filter((item) => item !== name),
+    });
+    toast.success(t('deleted') || "O'chirildi");
   };
 
   const addItem = (key, value, reset) => {
@@ -343,6 +370,43 @@ export default function SettingsPage() {
               onAdd={addProblemType}
               onEdit={editProblemType}
               onRemove={removeProblemType}
+              t={t}
+              hideHeader
+            />
+          </SettingsAccordionItem>
+        )}
+
+        {/* Toshkent ombori muammo turlari — alohida ro'yxat */}
+        {canAccessSettingsSection('settings_problem_types', user) && (
+          <SettingsAccordionItem
+            title="Toshkent ombori — muammo turlari"
+            description="Omborga qaytgan yuklar uchun sabab turlari. Bu ro'yxat 'Toshkent ombori' sahifasida qo'llaniladi."
+            isOpen={openSection === 'warehouseProblemTypes'}
+            onToggle={() => setOpenSection((current) => (current === 'warehouseProblemTypes' ? null : 'warehouseProblemTypes'))}
+          >
+            <SettingsList
+              title="Toshkent ombori — muammo turlari"
+              description="Omborga qaytgan yuklar uchun sabab turlari."
+              items={settings.warehouseProblemTypes || []}
+              value={warehouseProblemInput}
+              onChange={setWarehouseProblemInput}
+              onAdd={addWarehouseProblemType}
+              onEdit={(oldValue, newValue) => {
+                const existing = settings.warehouseProblemTypes || [];
+                const trimmed = String(newValue || '').trim();
+                if (!trimmed) return;
+                if (existing.some((item) => item.toLowerCase() === trimmed.toLowerCase() && item !== oldValue)) {
+                  toast.error(t('duplicateName') || 'Bunday nom allaqachon bor');
+                  return;
+                }
+                updateSettings({
+                  ...settings,
+                  warehouseProblemTypes: existing.map((item) => (item === oldValue ? trimmed : item)),
+                });
+                toast.success(t('saved') || 'Saqlandi');
+              }}
+              onRemove={removeWarehouseProblemType}
+              placeholder="Masalan: Yetkazib bera olmadi"
               t={t}
               hideHeader
             />
