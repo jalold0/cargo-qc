@@ -15,19 +15,52 @@ import LoginPage from './pages/LoginPage';
 
 // Pages — lazy load (route-based code splitting)
 // Har bir sahifa o'z chunk'i sifatida yuklanadi, initial bundle yengillashadi.
-const DashboardPage = lazy(() => import('./pages/DashboardPage'));
-const ComplaintsPage = lazy(() => import('./pages/ComplaintsPage'));
-const ComplaintDetailPage = lazy(() => import('./pages/ComplaintDetailPage'));
-const CreateComplaintPage = lazy(() => import('./pages/CreateComplaintPage'));
-const CompensatedLoadsPage = lazy(() => import('./pages/CompensatedLoadsPage'));
-const MyInProgressPage = lazy(() => import('./pages/MyInProgressPage'));
-const AssistantAiPage = lazy(() => import('./pages/AssistantAiPage'));
-const SettingsPage = lazy(() => import('./pages/SettingsPage'));
-const TrackingPage = lazy(() => import('./pages/TrackingPage'));
-const DepartmentOrderPage = lazy(() => import('./pages/DepartmentOrderPage'));
-const Module102Page = lazy(() => import('./pages/Module102Page'));
-const Module102DetailPage = lazy(() => import('./pages/Module102DetailPage'));
-const WarehousePage = lazy(() => import('./pages/WarehousePage'));
+//
+// IMPORTANT: lazyWithReload — yangi deploy chiqqanda, brauzerda eski
+// `index.html` keshda qolib, u eski chunk fayllariga ishora qilishi mumkin.
+// Vercel'da eski chunk hash o'chgan → "Failed to fetch dynamically imported
+// module" xato chiqadi. Bu wrapper birinchi marta fail bo'lsa, sessionStorage
+// orqali 1 marta avtomatik sahifani qayta yuklab beradi.
+const RELOAD_FLAG = 'cargo-qc-chunk-reload-tried';
+
+function lazyWithReload(factory) {
+  return lazy(() =>
+    factory().catch((err) => {
+      const message = String(err?.message || err || '');
+      const isChunkError =
+        /Failed to fetch dynamically imported module/i.test(message) ||
+        /Loading chunk \d+ failed/i.test(message) ||
+        /Importing a module script failed/i.test(message);
+
+      if (isChunkError && typeof window !== 'undefined') {
+        const triedAt = sessionStorage.getItem(RELOAD_FLAG);
+        const now = Date.now();
+        // Faqat 10 soniya ichida bir marta avtomatik reload — loop oldini olish
+        if (!triedAt || now - Number(triedAt) > 10_000) {
+          sessionStorage.setItem(RELOAD_FLAG, String(now));
+          window.location.reload();
+          // Return never-resolving promise so React doesn't render an error
+          return new Promise(() => {});
+        }
+      }
+      throw err;
+    }),
+  );
+}
+
+const DashboardPage = lazyWithReload(() => import('./pages/DashboardPage'));
+const ComplaintsPage = lazyWithReload(() => import('./pages/ComplaintsPage'));
+const ComplaintDetailPage = lazyWithReload(() => import('./pages/ComplaintDetailPage'));
+const CreateComplaintPage = lazyWithReload(() => import('./pages/CreateComplaintPage'));
+const CompensatedLoadsPage = lazyWithReload(() => import('./pages/CompensatedLoadsPage'));
+const MyInProgressPage = lazyWithReload(() => import('./pages/MyInProgressPage'));
+const AssistantAiPage = lazyWithReload(() => import('./pages/AssistantAiPage'));
+const SettingsPage = lazyWithReload(() => import('./pages/SettingsPage'));
+const TrackingPage = lazyWithReload(() => import('./pages/TrackingPage'));
+const DepartmentOrderPage = lazyWithReload(() => import('./pages/DepartmentOrderPage'));
+const Module102Page = lazyWithReload(() => import('./pages/Module102Page'));
+const Module102DetailPage = lazyWithReload(() => import('./pages/Module102DetailPage'));
+const WarehousePage = lazyWithReload(() => import('./pages/WarehousePage'));
 
 import { canAccess } from './services/access';
 import { archiveClosedEntriesByDayEnd, getSystemUsers, publicUser, runAppDataMigrations } from './services/localData';
