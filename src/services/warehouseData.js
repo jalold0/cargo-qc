@@ -367,6 +367,128 @@ export function deleteWarehouseReturn(id) {
   return { ok: true };
 }
 
+// ============================================================
+// MIGRATSIYA: OTK complaints'da problemType="Vozvrat" treklarini
+// Toshkent omboriga ko'chirish
+// ------------------------------------------------------------
+// - OTK murojaatlardan vozvrat'ga aloqador yozuvlarni topadi
+// - warehouse_returns ga ko'chiradi (104 bilan ham bog'laydi)
+// - migrationDone bayrog'i orqali qaytadan ishlamaydi
+// ============================================================
+const MIGRATION_KEY = 'cargo-qc-warehouse-vozvrat-migrated';
+
+function isVozvratProblem(value) {
+  return String(value || '').toLowerCase().includes('vozvrat');
+}
+
+export function previewVozvratCandidates() {
+  try {
+    const activeRaw = localStorage.getItem('cargo-qc-otk-entries');
+    const archiveRaw = localStorage.getItem('cargo-qc-otk-archive');
+    const active = activeRaw ? JSON.parse(activeRaw) : [];
+    const archive = archiveRaw ? JSON.parse(archiveRaw) : [];
+    const all = [...(Array.isArray(active) ? active : []), ...(Array.isArray(archive) ? archive : [])];
+
+    const candidates = all.filter((entry) => isVozvratProblem(entry?.problemType));
+    return { count: candidates.length, candidates };
+  } catch {
+    return { count: 0, candidates: [] };
+  }
+}
+
+export function isVozvratMigrationDone() {
+  try {
+    return localStorage.getItem(MIGRATION_KEY) === 'done';
+  } catch {
+    return false;
+  }
+}
+
+export function markVozvratMigrationDone() {
+  try {
+    localStorage.setItem(MIGRATION_KEY, 'done');
+  } catch {
+    // ignore
+  }
+}
+
+export function migrateVozvratToWarehouse({ removeFromOtk = false } = {}) {
+  const { candidates } = previewVozvratCandidates();
+  if (!candidates.length) {
+    markVozvratMigrationDone();
+    return { ok: true, migrated: 0, skipped: 0 };
+  }
+
+  const items = getWarehouseReturns();
+  const existingTracks = new Set(items.map((it) => String(it.trackCode || '').trim()));
+
+  const created = [];
+  const skipped = [];
+
+  candidates.forEach((entry) => {
+    const trackCode = String(entry.trackCode || '').trim();
+    if (!trackCode) {
+      skipped.push({ reason: 'no_track' });
+      return;
+    }
+    if (existingTracks.has(trackCode)) {
+      skipped.push({ reason: 'duplicate', trackCode });
+      return;
+    }
+
+    const warehouseEntry = normalizeEntry({
+      id: generateId(),
+      trackCode,
+      returnDate: entry.date || entry.createdAt || new Date().toISOString(),
+      problemType: entry.problemType || 'Vozvrat',
+      responsible: entry.handledBy || '',
+      customerPhone: entry.phone || '',
+      customerName: entry.customer || '',
+      note: entry.comment || entry.note || '',
+      status: 'qabul_qilindi',
+    });
+    created.push(warehouseEntry);
+    existingTracks.add(trackCode);
+  });
+
+  if (created.length) {
+    const next = [...created, ...items];
+    saveToStorage(next);
+    created.forEach((e) => {
+      scheduleRemoteSync(e);
+      markCompensatedAsFoundIfPresent(e);
+    });
+  }
+
+  // Original OTK yozuvlarini o'chirish (faqat removeFromOtk=true bo'lsa)
+  if (removeFromOtk && created.length) {
+    try {
+      const activeRaw = localStorage.getItem('cargo-qc-otk-entries');
+      const archiveRaw = localStorage.getItem('cargo-qc-otk-archive');
+      const active = activeRaw ? JSON.parse(activeRaw) : [];
+      const archive = archiveRaw ? JSON.parse(archiveRaw) : [];
+
+      const filterFn = (list) =>
+        Array.isArray(list) ? list.filter((e) => !isVozvratProblem(e?.problemType)) : [];
+
+      localStorage.setItem('cargo-qc-otk-entries', JSON.stringify(filterFn(active)));
+      localStorage.setItem('cargo-qc-otk-archive', JSON.stringify(filterFn(archive)));
+      window.dispatchEvent(new CustomEvent('cargo-qc-data-changed', { detail: { source: 'warehouse-migration' } }));
+    } catch (err) {
+      console.warn('[warehouse] OTK tozalashda xato:', err?.message || err);
+    }
+  }
+
+  markVozvratMigrationDone();
+
+  return {
+    ok: true,
+    migrated: created.length,
+    skipped: skipped.length,
+    skippedDetails: skipped,
+  };
+}
+
 export function getWarehouseStats() {
   const items = getWarehouseReturns();
   const today = new Date().toDateString();
