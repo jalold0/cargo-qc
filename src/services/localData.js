@@ -380,6 +380,7 @@ function hydrateComplaintsFromRemoteInBackground() {
   complaintsRemoteHydrationStarted = true;
 
   window.setTimeout(async () => {
+    let success = false;
     try {
       if (!supabase.isSupabaseEnabled) return;
       if (isRemoteSyncPending('complaints')) return;
@@ -412,8 +413,15 @@ function hydrateComplaintsFromRemoteInBackground() {
       if (localHasMore) {
         await supabase.upsertComplaintsSnapshotRemote(merged.active, merged.archive);
       }
+      success = true;
     } catch {
       // keep local mode if remote is unavailable
+    } finally {
+      // MUHIM: agar muvaffaqiyatsiz bo'lsa, flag'ni qaytarish — keyingi
+      // hydrate chaqiruvi (sahifa navigatsiyasi, focus, interval) qayta urinishi
+      if (!success) {
+        complaintsRemoteHydrationStarted = false;
+      }
     }
   }, 0);
 }
@@ -487,6 +495,7 @@ function hydrateCompensatedFromRemoteInBackground() {
   compensatedRemoteHydrationStarted = true;
 
   window.setTimeout(async () => {
+    let success = false;
     try {
       if (!supabase.isSupabaseEnabled) return;
       if (isRemoteSyncPending('compensated')) return;
@@ -502,11 +511,15 @@ function hydrateCompensatedFromRemoteInBackground() {
         replaceCompensatedRegistryLocal(merged);
       }
 
-      if (JSON.stringify(remote || []) !== JSON.stringify(merged) && merged.length) {
+      // Faqat local'da KO'PROQ yozuv bo'lsa server'ga push qilamiz (xavfsizlik)
+      if (local.length > (remote?.length || 0)) {
         await supabase.upsertCompensatedRegistryRemote(merged);
       }
+      success = true;
     } catch {
       // keep local mode if remote is unavailable
+    } finally {
+      if (!success) compensatedRemoteHydrationStarted = false;
     }
   }, 0);
 }
@@ -560,9 +573,16 @@ function hydrateSettingsFromRemoteInBackground() {
   settingsRemoteHydrationStarted = true;
 
   window.setTimeout(async () => {
+    let success = false;
     try {
-      if (!supabase.isSupabaseEnabled) return;
-      if (isRemoteSyncPending('settings')) return;
+      if (!supabase.isSupabaseEnabled) {
+        success = true; // not an error — feature disabled
+        return;
+      }
+      if (isRemoteSyncPending('settings')) {
+        success = true;
+        return;
+      }
 
       const probe = await supabase.testSettingsSupabaseConnection();
       if (!probe.ok) return;
@@ -578,8 +598,12 @@ function hydrateSettingsFromRemoteInBackground() {
       if (JSON.stringify(remote || {}) !== JSON.stringify(merged) && Object.keys(merged).length) {
         await supabase.upsertOtkSettingsRemote(merged);
       }
+      success = true;
     } catch {
       // keep local mode if remote is unavailable
+    } finally {
+      // Agar muvaffaqiyatsiz bo'lsa, flag'ni qaytarib qo'yamiz — keyingi safar qayta urinib ko'radi
+      if (!success) settingsRemoteHydrationStarted = false;
     }
   }, 0);
 }
@@ -613,12 +637,23 @@ function hydrateUsersFromRemoteInBackground() {
   usersRemoteHydrationStarted = true;
 
   window.setTimeout(async () => {
+    let success = false;
     try {
-      if (!isUsersRemoteEnabled) return;
-      if (isRemoteSyncPending('users')) return;
+      if (!isUsersRemoteEnabled) {
+        success = true; // feature disabled
+        return;
+      }
+      if (isRemoteSyncPending('users')) {
+        success = true;
+        return;
+      }
 
       const remote = await fetchUsersRemote();
-      if (!Array.isArray(remote) || remote.length === 0) return;
+      if (!Array.isArray(remote)) return; // null = network error, retry kerak
+      if (remote.length === 0) {
+        success = true; // bo'sh javob — server javob berdi
+        return;
+      }
 
       // Merge: remote yangiroq bo'lsa (updated_at), uni saqlaymiz; local-only userlar qoladi
       const local = readJson(USERS_KEY, []);
@@ -649,8 +684,12 @@ function hydrateUsersFromRemoteInBackground() {
         computedCache.users = { raw: null, value: null }; // cache invalidation
         dispatchDataChanged('users');
       }
+      success = true;
     } catch {
       // silent fallback
+    } finally {
+      // Network xato bo'lsa flag'ni qaytaramiz — keyingi qayta urinish uchun
+      if (!success) usersRemoteHydrationStarted = false;
     }
   }, 0);
 }
@@ -683,15 +722,22 @@ function hydrateAssistantFromRemoteInBackground() {
   assistantRemoteHydrationStarted = true;
 
   window.setTimeout(async () => {
+    let success = false;
     try {
-      if (!supabase.isSupabaseEnabled) return;
-      if (isRemoteSyncPending('assistant')) return;
+      if (!supabase.isSupabaseEnabled) {
+        success = true; // feature disabled
+        return;
+      }
+      if (isRemoteSyncPending('assistant')) {
+        success = true;
+        return;
+      }
 
       const probe = await supabase.testSupabaseConnection();
       if (!probe.ok) return;
 
       const remote = await supabase.fetchAssistantAiRequestsRemote();
-      if (!Array.isArray(remote)) return;
+      if (!Array.isArray(remote)) return; // null/undefined = retry kerak
 
       const local = readJson(ASSISTANT_AI_KEY, []);
       const merged = mergeAssistantAiRequests(local, remote);
@@ -703,8 +749,12 @@ function hydrateAssistantFromRemoteInBackground() {
         computedCache.assistantAi = { raw: null, value: null };
         dispatchDataChanged('assistant_ai');
       }
+      success = true;
     } catch {
       // silent fallback
+    } finally {
+      // Muvaffaqiyatsizlik: keyingi safar qayta urinib ko'rsin
+      if (!success) assistantRemoteHydrationStarted = false;
     }
   }, 0);
 }
