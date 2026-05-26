@@ -14,6 +14,7 @@ import {
   bulkUpsertWarehouseReturnsRemote,
   deleteWarehouseReturnRemote,
   testWarehouseReturnsSupabaseConnection,
+  markComplaintDeletedRemote,
 } from './supabaseRest';
 
 const STORAGE_KEY = 'cargo-qc-warehouse-returns';
@@ -461,6 +462,8 @@ export function migrateVozvratToWarehouse({ removeFromOtk = false } = {}) {
   }
 
   // Original OTK yozuvlarini o'chirish (faqat removeFromOtk=true bo'lsa)
+  // MUHIM: Faqat lokaldan emas, Supabase'dan ham soft-delete qilamiz —
+  // aks holda keyingi sync'da yozuvlar qaytib keladi.
   if (removeFromOtk && created.length) {
     try {
       const activeRaw = localStorage.getItem('cargo-qc-otk-entries');
@@ -468,12 +471,40 @@ export function migrateVozvratToWarehouse({ removeFromOtk = false } = {}) {
       const active = activeRaw ? JSON.parse(activeRaw) : [];
       const archive = archiveRaw ? JSON.parse(archiveRaw) : [];
 
+      // Vozvrat yozuvlarini topib, ID'larini yig'amiz
+      const vozvratIds = [];
+      const collect = (list) => {
+        if (!Array.isArray(list)) return;
+        list.forEach((e) => {
+          if (isVozvratProblem(e?.problemType) && e?.id) {
+            vozvratIds.push(e.id);
+          }
+        });
+      };
+      collect(active);
+      collect(archive);
+
+      // Lokal cache'dan olib tashlash
       const filterFn = (list) =>
         Array.isArray(list) ? list.filter((e) => !isVozvratProblem(e?.problemType)) : [];
 
       localStorage.setItem('cargo-qc-otk-entries', JSON.stringify(filterFn(active)));
       localStorage.setItem('cargo-qc-otk-archive', JSON.stringify(filterFn(archive)));
       window.dispatchEvent(new CustomEvent('cargo-qc-data-changed', { detail: { source: 'warehouse-migration' } }));
+
+      // Supabase'da ham soft-delete (fonda, bir-biriga to'sqinlik qilmasin)
+      if (isSupabaseEnabled && vozvratIds.length) {
+        Promise.allSettled(
+          vozvratIds.map((id) => markComplaintDeletedRemote(id)),
+        ).then((results) => {
+          const failed = results.filter((r) => r.status === 'rejected').length;
+          if (failed > 0) {
+            console.warn(
+              `[warehouse] ${failed} / ${vozvratIds.length} OTK yozuvini Supabase'dan o'chirib bo'lmadi`,
+            );
+          }
+        });
+      }
     } catch (err) {
       console.warn('[warehouse] OTK tozalashda xato:', err?.message || err);
     }
