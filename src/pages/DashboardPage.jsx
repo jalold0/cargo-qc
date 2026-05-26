@@ -650,6 +650,42 @@ export default function DashboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dateRange.from, dateRange.to]);
 
+  // ============================================================
+  // Rahbar statistikasi (departmentSelectedMonth/Year) — har bir
+  // qurilmada bir xil natija ko'rsatishi uchun, tanlangan oy
+  // ma'lumotlarini Supabase'dan to'liq tortib olamiz.
+  // Bu mahalliy keshdagi farqdan qutqaradi (3 qurilma = 3 statistika
+  // muammosini hal qiladi).
+  // ============================================================
+  useEffect(() => {
+    const year = Number(departmentSelectedYear);
+    const month = Number(departmentSelectedMonth); // 0-based
+    if (!Number.isFinite(year) || !Number.isFinite(month)) return;
+
+    // Oraliqni yasash: YYYY-MM-01 dan oxirgi kungacha
+    const pad = (n) => String(n).padStart(2, '0');
+    const from = `${year}-${pad(month + 1)}-01`;
+    // Keyingi oyning 1-kunidan oldin (exclusive) — lekin biz inclusive
+    // `lte` ishlatamiz, shuning uchun oxirgi kunni hisoblaymiz
+    const lastDay = new Date(year, month + 1, 0).getDate();
+    const to = `${year}-${pad(month + 1)}-${pad(lastDay)}`;
+
+    let cancelled = false;
+    hydrateComplaintsByDateRange(from, to)
+      .then((result) => {
+        if (cancelled || !result?.ok) return;
+        // Sync subscribeToOtkData orqali state yangilanadi —
+        // departmentStats avtomatik qayta hisoblanadi
+      })
+      .catch(() => {
+        // Sokin xato — local kesh ishlatiladi
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [departmentSelectedMonth, departmentSelectedYear]);
+
   const refetch = () => {
     setIsFetching(true);
     const localStats = getOtkDashboardStats(dateRange, { reportYear: monthlyReportYear });
