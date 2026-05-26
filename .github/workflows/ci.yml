@@ -25,10 +25,17 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'npm'
+
+      - name: Print versions
+        run: |
+          node --version
+          npm --version
 
       - name: Install dependencies
-        run: npm ci
+        # `npm ci` lock fayl bilan sinxron bo'lishni talab qiladi.
+        # CI'da to'g'ridan-to'g'ri `npm install` ishlatamiz — bu turli npm/Node
+        # versiyalari o'rtasidagi lockfile mismatch'larga chidamli.
+        run: npm install --no-audit --no-fund
 
       - name: Lint
         run: npm run lint
