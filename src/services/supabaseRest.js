@@ -246,9 +246,34 @@ function fromRemoteComplaintEntry(row) {
   };
 }
 
-// Initial boot uchun — faqat ACTIVE + so'nggi 200 archive yozuv
-// 19K archive'ni darrov tortish telefonni qotirib qo'yadi.
-export async function fetchComplaintsRemote({ includeArchive = true, archiveLimit = null } = {}) {
+// ============================================================
+// Complaints fetch — bir nechta strategiya:
+//   - dateFrom/dateTo bilan: oraliq filtri (eng tez)
+//   - includeArchive=false: faqat active
+//   - archiveLimit=N: active + so'nggi N archive
+//   - hammasi default: to'liq baza (manual sync uchun)
+// PostgREST sintaksisi: date=gte.YYYY-MM-DD&date=lte.YYYY-MM-DD
+// ============================================================
+export async function fetchComplaintsRemote({
+  includeArchive = true,
+  archiveLimit = null,
+  dateFrom = null,
+  dateTo = null,
+} = {}) {
+  // Sana oraliq filtri eng yuqori ustuvorlikda
+  if (dateFrom || dateTo) {
+    const filters = ['select=*', 'is_deleted=eq.false'];
+    if (dateFrom) filters.push(`date=gte.${encodeURIComponent(dateFrom)}`);
+    if (dateTo) filters.push(`date=lte.${encodeURIComponent(dateTo)}`);
+    filters.push('order=date.desc');
+    const rows = await fetchAllPaginated(`complaints_entries?${filters.join('&')}`);
+    const mapped = Array.isArray(rows) ? rows.map(fromRemoteComplaintEntry) : [];
+    return {
+      active: mapped.filter((item) => !item.isArchived),
+      archive: mapped.filter((item) => item.isArchived),
+    };
+  }
+
   if (!includeArchive) {
     // Faqat active complaints (is_archived=false)
     const rows = await fetchAllPaginated(

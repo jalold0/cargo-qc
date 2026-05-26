@@ -8,7 +8,6 @@ import {
   deleteOtkEntry,
   getOtkArchive,
   getOtkEntries,
-  hydrateFullArchiveFromRemote,
   importOtkEntries,
   subscribeToOtkData,
 } from '../services/localData';
@@ -150,43 +149,10 @@ export default function ComplaintsPage() {
     return subscribeToOtkData(sync, { debounceMs: 70 });
   }, []);
 
-  // ============================================================
-  // To'liq arxiv yuklash — "Arxiv" tab bosilganda
-  // ------------------------------------------------------------
-  // Boot paytida faqat 500 archive yuklanadi (tezlik uchun).
-  // Foydalanuvchi "Arxiv" tab'iga o'tganda — barcha ~19K ni tortamiz.
-  // Bir martalik chaqiruv — natija subscribeToOtkData orqali state'ga keladi.
-  // ============================================================
-  const fullArchiveLoadedRef = useRef(false);
-  useEffect(() => {
-    if (view !== 'archive') return;
-    if (fullArchiveLoadedRef.current) return;
-    fullArchiveLoadedRef.current = true;
-
-    const toastId = toast.loading(t('loadingFullArchive') || "To'liq arxiv yuklanmoqda…");
-    hydrateFullArchiveFromRemote()
-      .then((result) => {
-        if (result?.ok) {
-          toast.success(
-            `${t('archive') || 'Arxiv'}: ${result.archiveCount.toLocaleString()} ${t('records') || 'yozuv'}`,
-            { id: toastId },
-          );
-          // Sync subscribeToOtkData orqali avtomatik yangilanadi
-          setEntries(getOtkEntries());
-          setArchive(getOtkArchive());
-        } else if (result?.reason === 'already-loaded') {
-          toast.dismiss(toastId);
-        } else {
-          toast.error(t('loadFailed') || "Yuklashda xato", { id: toastId });
-          // Keyingi safar qayta urinish uchun flag'ni qaytar
-          fullArchiveLoadedRef.current = false;
-        }
-      })
-      .catch(() => {
-        toast.error(t('loadFailed') || "Yuklashda xato", { id: toastId });
-        fullArchiveLoadedRef.current = false;
-      });
-  }, [view, t]);
+  // Eslatma: To'liq arxiv endi avtomatik yuklanmaydi.
+  // Foydalanuvchi Dashboard'da sana filtrini o'zgartirsa, kerakli
+  // oraliq Supabase'dan tortiladi. Bu yondashuv telefonni qotirib
+  // qo'ymaydi va faqat zarur bo'lgan ma'lumotni yuklaydi.
 
   const openImportPicker = () => {
     setImportModalOpen(true);

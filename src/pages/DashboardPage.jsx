@@ -50,6 +50,7 @@ import {
   getRecoveredCompensatedLoads,
   getSystemUsers,
   getWaitingDays,
+  hydrateComplaintsByDateRange,
   subscribeToOtkData,
   toDateKey,
 } from '../services/localData';
@@ -579,6 +580,44 @@ export default function DashboardPage() {
 
     return subscribeToOtkData(syncDashboard, { debounceMs: 90 });
   }, [dateRange, monthlyReportYear]);
+
+  // ============================================================
+  // Sana filtri o'zgarganda Supabase'dan o'sha oraliqni tortish
+  // ------------------------------------------------------------
+  // Boot vaqtida faqat joriy oy yuklanadi (light). Foydalanuvchi sana
+  // filtrini o'zgartirganda — Supabase'dan o'sha sanalar oralig'idagi
+  // murojaatlar avtomatik tortiladi va merge qilinadi.
+  // Empty from/to (ikkalasi ham bo'sh) — hech narsa qilmaymiz (default holat).
+  // ============================================================
+  useEffect(() => {
+    const { from, to } = dateRange || {};
+    if (!from && !to) return; // Filter olib tashlangan — hech narsa qilmaymiz
+
+    let cancelled = false;
+    const toastId = toast.loading('Sana bo\'yicha yuklanmoqda…');
+    hydrateComplaintsByDateRange(from || null, to || null)
+      .then((result) => {
+        if (cancelled) return;
+        if (result?.ok) {
+          toast.success(
+            `${result.fetchedCount.toLocaleString()} yozuv yuklandi`,
+            { id: toastId, duration: 2500 },
+          );
+        } else if (result?.reason === 'remote-disabled') {
+          toast.dismiss(toastId);
+        } else {
+          toast.error('Yuklashda xato', { id: toastId });
+        }
+      })
+      .catch(() => {
+        if (!cancelled) toast.error('Yuklashda xato', { id: toastId });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dateRange.from, dateRange.to]);
 
   const refetch = () => {
     setIsFetching(true);

@@ -376,6 +376,14 @@ function scheduleComplaintsRemoteSync() {
   }, 180);
 }
 
+// Joriy kalendar oy boshini ISO formatda qaytaradi: "2026-05-01"
+function getCurrentMonthStartIso() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  return `${year}-${month}-01`;
+}
+
 function hydrateComplaintsFromRemoteInBackground() {
   if (typeof window === 'undefined' || complaintsRemoteHydrationStarted) return;
   complaintsRemoteHydrationStarted = true;
@@ -389,12 +397,12 @@ function hydrateComplaintsFromRemoteInBackground() {
       const probe = await supabase.testComplaintsSupabaseConnection();
       if (!probe.ok) return;
 
-      // LIGHT HYDRATION — active + so'nggi 500 archive yozuv.
+      // LIGHT BOOT HYDRATION — faqat joriy kalendar oy.
       // 19K archive'ni darrov tortish telefonni qotirib qo'yadi.
-      // To'liq archive ComplaintsPage'da Archive tabini bosganda yuklanadi.
+      // Kerak bo'lsa Dashboard sana filtri orqali boshqa oraliq tortiladi.
+      const monthStart = getCurrentMonthStartIso();
       const remote = await supabase.fetchComplaintsRemote({
-        includeArchive: true,
-        archiveLimit: 500,
+        dateFrom: monthStart,
       });
       const localActive = normalizeEntries(decodeEntryCollection(readJson(ENTRIES_KEY, [])));
       const localArchive = normalizeEntries(decodeEntryCollection(readJson(ARCHIVE_KEY, [])));
@@ -407,13 +415,9 @@ function hydrateComplaintsFromRemoteInBackground() {
         replaceComplaintSnapshotsLocal(merged.active, merged.archive);
       }
 
-      // Push'ni faqat local'da QO'SHIMCHA yozuv bo'lsa qilamiz (xavfsizlik)
-      const localHasMore =
-        localActive.length > (remote.active || []).length ||
-        localArchive.length > 500; // bizning archiveLimit
-      if (localHasMore) {
-        await supabase.upsertComplaintsSnapshotRemote(merged.active, merged.archive);
-      }
+      // Push'ni faqat local'da QO'SHIMCHA yozuv bo'lsa qilamiz (xavfsizlik).
+      // Endi bu zarur emas (boot faqat joriy oyni o'qiydi), shuning uchun
+      // chetga olib chiqilgan upsert mantiqi olib tashlandi.
       success = true;
     } catch {
       // keep local mode if remote is unavailable
@@ -425,6 +429,52 @@ function hydrateComplaintsFromRemoteInBackground() {
       }
     }
   }, 0);
+}
+
+// ============================================================
+// hydrateComplaintsByDateRange — sana filtri o'zgarganda chaqiriladi
+// ------------------------------------------------------------
+// Dashboard yoki ComplaintsPage'da foydalanuvchi sana oraliqni
+// tanlaganida — Supabase'dan o'sha oraliq murojaatlarini tortib,
+// localStorage'ga qo'shadi (merge).
+// from/to: 'YYYY-MM-DD' formatida ISO sana stringi.
+// from/to ikkalasi ham null bo'lsa — full archive yuklanadi.
+// ============================================================
+export async function hydrateComplaintsByDateRange(from, to) {
+  if (typeof window === 'undefined') return { ok: false, reason: 'no-window' };
+  if (!supabase.isSupabaseEnabled) return { ok: false, reason: 'remote-disabled' };
+
+  try {
+    const remote = await supabase.fetchComplaintsRemote({
+      dateFrom: from || null,
+      dateTo: to || null,
+    });
+
+    const localActive = normalizeEntries(decodeEntryCollection(readJson(ENTRIES_KEY, [])));
+    const localArchive = normalizeEntries(decodeEntryCollection(readJson(ARCHIVE_KEY, [])));
+    const merged = mergeComplaintSnapshots(
+      localActive,
+      localArchive,
+      remote.active || [],
+      remote.archive || [],
+    );
+
+    if (
+      JSON.stringify(localActive) !== JSON.stringify(merged.active) ||
+      JSON.stringify(localArchive) !== JSON.stringify(merged.archive)
+    ) {
+      replaceComplaintSnapshotsLocal(merged.active, merged.archive);
+    }
+
+    return {
+      ok: true,
+      activeCount: merged.active.length,
+      archiveCount: merged.archive.length,
+      fetchedCount: (remote.active?.length || 0) + (remote.archive?.length || 0),
+    };
+  } catch (error) {
+    return { ok: false, reason: 'fetch-failed', error: String(error?.message || error) };
+  }
 }
 
 // ============================================================
