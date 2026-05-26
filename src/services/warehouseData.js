@@ -191,48 +191,43 @@ export async function hydrateWarehouseByDateRange(from, to) {
 }
 
 // ============================================================
-// 104 — Moliya bilan avtomatik ulanish
+// 104 — Moliya bilan ulanish (PASSIVE)
 // ------------------------------------------------------------
-// Trek omborga kiritilganda darrov compensated_loads_registry'da
-// "Topilgan yuk" sifatida yozib qo'yiladi. Bu murakkab integration
-// emas — local cache'da yangi entry yaratiladi.
+// Warehouse — bu alohida baza. 104'ga yangi yozuv yaratmaymiz.
+// Faqat: agar 104'da shu trek mavjud bo'lsa, uning yozuvini
+// "Topildi — Toshkent ombori" metadata bilan boyitamiz.
+// 104 da bo'lmasa — hech narsa qilmaymiz, omborda qoladi.
 // ============================================================
-function syncToCompensatedRegistry(entry) {
-  if (typeof window === 'undefined') return;
+function markCompensatedAsFoundIfPresent(entry) {
+  if (typeof window === 'undefined') return false;
   try {
     const raw = localStorage.getItem(COMPENSATED_KEY);
     const registry = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(registry)) return;
+    if (!Array.isArray(registry)) return false;
 
-    const compensatedId = `warehouse-${entry.id}`;
-    const exists = registry.some(
-      (item) => item.id === compensatedId || item.trackCode === entry.trackCode,
+    const idx = registry.findIndex(
+      (item) => String(item.trackCode || '').trim() === entry.trackCode,
     );
-    if (exists) return;
+    if (idx === -1) return false; // 104 da yo'q — tegmaslik
 
-    registry.unshift({
-      id: compensatedId,
-      trackCode: entry.trackCode,
-      compensatedDate: entry.returnDate,
-      phone: entry.customerPhone,
-      customer: entry.customerName,
-      paymentAmount: 0,
-      paymentStatus: 'Kutmoqda',
-      foundCaseOutcome: 'Topildi — Toshkent ombori',
-      foundResolutionStatus: 'Topildi',
-      comment: `Toshkent ombori vozvrat: ${entry.problemType || 'Sabab ko\'rsatilmagan'}. ${entry.note || ''}`.trim(),
-      importedAt: new Date().toISOString(),
+    // Mavjud 104 yozuvini "topildi" metadata bilan boyitamiz
+    const existing = registry[idx];
+    const outcomeText = `Topildi — Toshkent ombori${entry.problemType ? ` (${entry.problemType})` : ''}`;
+
+    registry[idx] = {
+      ...existing,
+      foundCaseOutcome: existing.foundCaseOutcome || outcomeText,
+      _warehouseRef: entry.id,
+      _warehouseFoundAt: entry.returnDate,
       updatedAt: new Date().toISOString(),
-      _source: 'warehouse',
-      _warehouseId: entry.id,
-    });
+    };
 
     localStorage.setItem(COMPENSATED_KEY, JSON.stringify(registry));
-
-    // 104 — Moliya page'ni xabardor qilish uchun custom event
     window.dispatchEvent(new CustomEvent('cargo-qc-compensated-changed'));
+    return true;
   } catch (error) {
-    console.warn('[warehouse] 104 sync xato:', error?.message || error);
+    console.warn('[warehouse] 104 belgilashda xato:', error?.message || error);
+    return false;
   }
 }
 
@@ -275,7 +270,7 @@ export function createWarehouseReturn(payload) {
   const next = [entry, ...items];
   saveToStorage(next);
   scheduleRemoteSync(entry);
-  syncToCompensatedRegistry(entry);
+  markCompensatedAsFoundIfPresent(entry);
 
   return { ok: true, entry };
 }
@@ -325,7 +320,7 @@ export function bulkCreateWarehouseReturns(rows = [], commonFields = {}) {
     // Batch ravishda Supabase'ga
     created.forEach((e) => {
       scheduleRemoteSync(e);
-      syncToCompensatedRegistry(e);
+      markCompensatedAsFoundIfPresent(e);
     });
   }
 

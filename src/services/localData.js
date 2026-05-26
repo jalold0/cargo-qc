@@ -3032,8 +3032,40 @@ function countAssignedEntries(entries, user) {
 // isCompensatedRecoveredProblemType, normalizeTrackCode,
 // compareTrackEntryOrder, resolveEntryOrderTime
 
+// Toshkent ombori vozvratlarini OTK "found entry" formatiga aylantirish
+// (faqat trackCode mosligi tekshirilganda kerak — to'liq OTK fieldlari emas)
+function readWarehouseReturnsRaw() {
+  try {
+    const raw = localStorage.getItem('cargo-qc-warehouse-returns');
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function warehouseReturnAsSyntheticFoundEntry(wr) {
+  if (!wr || !wr.trackCode) return null;
+  return {
+    id: `warehouse-${wr.id}`,
+    trackCode: wr.trackCode,
+    date: wr.returnDate || wr.createdAt,
+    problemType: 'Vozvrat (Toshkent ombori)',
+    department: 'Toshkent ombori',
+    requestSource: 'Warehouse',
+    handledBy: wr.responsible || '',
+    status: wr.status || 'Topilgan',
+    priority: 'normal',
+    comment: wr.note || '',
+    _warehouseId: wr.id,
+    _warehouseSource: true,
+  };
+}
+
 function buildRecoveredCompensatedLoads(records = []) {
   const registry = getCompensatedLoadRegistry();
+  const warehouseReturns = readWarehouseReturnsRaw();
   const grouped = new Map();
 
   records.forEach((entry) => {
@@ -3043,16 +3075,38 @@ function buildRecoveredCompensatedLoads(records = []) {
     grouped.get(key).push(entry);
   });
 
-  const trackKeys = Array.from(new Set([...grouped.keys(), ...registry.map((item) => normalizeTrackCode(item.trackCode)).filter(Boolean)]));
+  // Warehouse vozvratlarni "found entry" sifatida bir xil group'ga qo'shamiz
+  const warehouseByTrack = new Map();
+  warehouseReturns.forEach((wr) => {
+    const key = normalizeTrackCode(wr.trackCode);
+    if (!key) return;
+    if (!warehouseByTrack.has(key)) warehouseByTrack.set(key, []);
+    warehouseByTrack.get(key).push(wr);
+  });
+
+  const trackKeys = Array.from(new Set([
+    ...grouped.keys(),
+    ...warehouseByTrack.keys(),
+    ...registry.map((item) => normalizeTrackCode(item.trackCode)).filter(Boolean),
+  ]));
 
   return trackKeys
     .map((trackKey) => {
       const entries = grouped.get(trackKey) || [];
       const registryItem = registry.find((item) => normalizeTrackCode(item.trackCode) === trackKey) || null;
       const latestPair = findCompensatedRecoveryPair(entries);
-      const foundEntry = latestPair?.foundEntry || findLatestFoundEntry(entries);
+      const otkFoundEntry = latestPair?.foundEntry || findLatestFoundEntry(entries);
       const compensationEntry = latestPair?.compensationEntry || findLatestCompensationEntry(entries);
 
+      // Agar OTK'da "found" yozuv yo'q bo'lsa, Toshkent ombori vozvratidan
+      // synthetic found entry yasaymiz (faqat 104'da yozuv bo'lsa)
+      const warehouseEntries = warehouseByTrack.get(trackKey) || [];
+      const warehouseFound = warehouseEntries[0]
+        ? warehouseReturnAsSyntheticFoundEntry(warehouseEntries[0])
+        : null;
+      const foundEntry = otkFoundEntry || warehouseFound;
+
+      // 104 da yo'q va OTK pair'i ham yo'q — bu yuk faqat omborda
       if (!registryItem && !latestPair) return null;
       if (!foundEntry) return null;
 
