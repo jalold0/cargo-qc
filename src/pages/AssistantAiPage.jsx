@@ -198,9 +198,23 @@ export default function AssistantAiPage() {
           </div>
           <h1 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950 dark:text-white">{t('assistantAiTitle')}</h1>
           <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{t('assistantAiSubtitle')}</p>
-          <div className="mt-3 inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
-            <span className={clsx('h-2 w-2 rounded-full', remoteState === 'connected' ? 'bg-emerald-500' : 'bg-amber-400')} />
-            {remoteState === 'connected' ? t('assistantAiSupabaseConnected') : t('assistantAiSupabaseLocal')}
+          <div className={clsx(
+            'mt-3 inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold ring-1',
+            remoteState === 'connected' || isSupabaseEnabled
+              ? 'bg-sky-50 text-sky-700 ring-sky-200 dark:bg-sky-500/10 dark:text-sky-300 dark:ring-sky-500/20'
+              : 'bg-amber-50 text-amber-700 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-500/20',
+          )}>
+            <span className={clsx(
+              'h-2 w-2 rounded-full',
+              remoteState === 'connected' || isSupabaseEnabled
+                ? 'animate-pulse bg-sky-500'
+                : 'bg-amber-400',
+            )} />
+            {remoteState === 'connected'
+              ? t('assistantAiSupabaseConnected')
+              : isSupabaseEnabled
+                ? 'Bulutli baza'
+                : t('assistantAiSupabaseLocal')}
           </div>
         </div>
         <button

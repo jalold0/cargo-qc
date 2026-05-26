@@ -725,7 +725,16 @@ function StatPill({ label, value, color }) {
 }
 
 function SyncIndicator({ meta, hasCRM }) {
-  if (!meta?.lastSyncAt) {
+  // Supabase ulanmaganmi tekshirish (custom CRM ham yo'q, Supabase ham yo'q)
+  const supabaseOn = Boolean(
+    import.meta.env.VITE_SUPABASE_URL && import.meta.env.VITE_SUPABASE_ANON_KEY,
+  );
+
+  // Supabase ulangan, lekin CRM scraper ishlamaydi (HTTPS muhitda normal) —
+  // bu "Bulutli baza" rejimi; lokal emas.
+  const isCloudMode = supabaseOn && !hasCRM;
+
+  if (!meta?.lastSyncAt && !isCloudMode) {
     return (
       <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-500 dark:bg-slate-800 dark:text-slate-400">
         <span className="h-1.5 w-1.5 rounded-full bg-slate-400" />
@@ -734,12 +743,24 @@ function SyncIndicator({ meta, hasCRM }) {
     );
   }
 
-  const ago = Math.round((Date.now() - new Date(meta.lastSyncAt).getTime()) / 60000);
-  const isError = meta.status === 'error';
+  const ago = meta?.lastSyncAt
+    ? Math.round((Date.now() - new Date(meta.lastSyncAt).getTime()) / 60000)
+    : 0;
+  const isError = meta?.status === 'error';
+
+  // Cloud mode badge
+  if (isCloudMode && !isError) {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-50 px-2.5 py-1 text-[11px] font-semibold text-sky-700 dark:bg-sky-500/10 dark:text-sky-300">
+        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-500" />
+        Bulutli baza
+      </span>
+    );
+  }
 
   return (
     <span
-      title={meta.message || ''}
+      title={meta?.message || ''}
       className={clsx(
         'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold',
         isError

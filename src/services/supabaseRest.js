@@ -441,3 +441,108 @@ export async function testSettingsSupabaseConnection() {
     return { ok: false, message: error instanceof Error ? error.message : 'Supabase settings connection failed.' };
   }
 }
+
+// ============================================================
+// MODULE 102 (OTK) — Supabase REST funksiyalari
+// ------------------------------------------------------------
+// module_102_entries jadvali bilan ishlash. Treklar JSONB sifatida
+// saqlanadi (nested data). Tafsilotlar uchun:
+//   supabase/module_102_schema.sql
+// ============================================================
+
+function toRemoteModule102Entry(entry) {
+  return {
+    id: String(entry.id || ''),
+    phone: String(entry.phone || ''),
+    customer: String(entry.customer || ''),
+    status: String(entry.status || 'qabul_qilindi'),
+    source: String(entry.source || 'manual'),
+    locked_by: entry.lockedBy || null,
+    locked_at: entry.lockedAt || null,
+    note: String(entry.note || ''),
+    tracks: Array.isArray(entry.tracks) ? entry.tracks : [],
+    created_at: entry.createdAt || new Date().toISOString(),
+    updated_at: entry.updatedAt || new Date().toISOString(),
+  };
+}
+
+function fromRemoteModule102Entry(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    phone: row.phone || '',
+    customer: row.customer || '',
+    status: row.status || 'qabul_qilindi',
+    source: row.source || 'manual',
+    lockedBy: row.locked_by || null,
+    lockedAt: row.locked_at || null,
+    note: row.note || '',
+    tracks: Array.isArray(row.tracks) ? row.tracks : [],
+    createdAt: row.created_at || new Date().toISOString(),
+    updatedAt: row.updated_at || row.created_at || new Date().toISOString(),
+  };
+}
+
+// fetchModule102EntriesRemote — barcha murojaatlarni o'qish.
+// dateFrom/dateTo: sana oraliq filtri uchun (PostgREST created_at.gte/.lte).
+export async function fetchModule102EntriesRemote({
+  dateFrom = null,
+  dateTo = null,
+} = {}) {
+  const filters = ['select=*', 'is_deleted=eq.false'];
+  if (dateFrom) filters.push(`created_at=gte.${encodeURIComponent(dateFrom)}`);
+  if (dateTo) filters.push(`created_at=lte.${encodeURIComponent(dateTo)}`);
+  filters.push('order=created_at.desc');
+
+  const rows = await fetchAllPaginated(`module_102_entries?${filters.join('&')}`);
+  return Array.isArray(rows) ? rows.map(fromRemoteModule102Entry).filter(Boolean) : [];
+}
+
+export async function upsertModule102EntryRemote(entry) {
+  const payload = toRemoteModule102Entry(entry);
+  const rows = await supabaseRequest('module_102_entries?on_conflict=id', {
+    method: 'POST',
+    headers: {
+      Prefer: 'resolution=merge-duplicates,return=representation',
+    },
+    body: JSON.stringify(payload),
+  });
+  return Array.isArray(rows) && rows[0] ? fromRemoteModule102Entry(rows[0]) : entry;
+}
+
+export async function bulkUpsertModule102EntriesRemote(entries = []) {
+  if (!Array.isArray(entries) || !entries.length) return [];
+
+  const payload = entries.map(toRemoteModule102Entry);
+  const rows = await supabaseRequest('module_102_entries?on_conflict=id', {
+    method: 'POST',
+    headers: {
+      Prefer: 'resolution=merge-duplicates,return=representation',
+    },
+    body: JSON.stringify(payload),
+  });
+  return Array.isArray(rows) ? rows.map(fromRemoteModule102Entry).filter(Boolean) : [];
+}
+
+export async function deleteModule102EntryRemote(id) {
+  if (!id) return false;
+  // Soft delete — is_deleted=true
+  const rows = await supabaseRequest(
+    `module_102_entries?id=eq.${encodeURIComponent(id)}`,
+    {
+      method: 'PATCH',
+      headers: { Prefer: 'return=minimal' },
+      body: JSON.stringify({ is_deleted: true, updated_at: new Date().toISOString() }),
+    },
+  );
+  return rows !== undefined;
+}
+
+export async function testModule102SupabaseConnection() {
+  try {
+    await supabaseRequest('module_102_entries?select=id&limit=1');
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : 'Supabase module_102 connection failed.' };
+  }
+}

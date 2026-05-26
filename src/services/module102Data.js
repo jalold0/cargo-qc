@@ -1,5 +1,13 @@
 import { module102Seed } from './module102Seed';
 import { scrapeCRMStats, getCachedCRMStats, setCachedCRMStats } from './crmScraper';
+import {
+  isSupabaseEnabled,
+  fetchModule102EntriesRemote,
+  upsertModule102EntryRemote,
+  bulkUpsertModule102EntriesRemote,
+  deleteModule102EntryRemote,
+  testModule102SupabaseConnection,
+} from './supabaseRest';
 
 const STORAGE_KEY = 'cargo-qc-module-102';
 const SYNC_META_KEY = 'cargo-qc-module-102-sync';
@@ -9,6 +17,9 @@ export const MODULE_102_STATUSES = ['qabul_qilindi', 'jarayonda', 'yopildi', 'fi
 
 const subscribers = new Set();
 let syncTimer = null;
+let module102RemoteHydrationStarted = false;
+let module102RemoteSyncTimer = null;
+const pendingRemoteUpserts = new Map(); // id → entry (so'nggi versiya)
 
 function notifySubscribers() {
   subscribers.forEach((callback) => {
@@ -41,6 +52,135 @@ function saveToStorage(items) {
   }
 }
 
+// ============================================================
+// Supabase sync — fonda bir nechta upsert'larni yig'ib yuborish
+// (debounce + bulk). Saqlash darrov local'da, network esa fonda.
+// ============================================================
+function scheduleRemoteSync(entry) {
+  if (typeof window === 'undefined' || !isSupabaseEnabled) return;
+  if (!entry || !entry.id) return;
+
+  pendingRemoteUpserts.set(entry.id, entry);
+
+  if (module102RemoteSyncTimer) {
+    window.clearTimeout(module102RemoteSyncTimer);
+  }
+
+  module102RemoteSyncTimer = window.setTimeout(async () => {
+    module102RemoteSyncTimer = null;
+    const batch = Array.from(pendingRemoteUpserts.values());
+    pendingRemoteUpserts.clear();
+    if (!batch.length) return;
+
+    try {
+      if (batch.length === 1) {
+        await upsertModule102EntryRemote(batch[0]);
+      } else {
+        await bulkUpsertModule102EntriesRemote(batch);
+      }
+    } catch (error) {
+      // Network xatosi — qaytadan keyingi safar urinish uchun pending'ga
+      batch.forEach((item) => pendingRemoteUpserts.set(item.id, item));
+      console.warn('[module102] remote sync xatosi:', error?.message || error);
+    }
+  }, 250);
+}
+
+// ============================================================
+// Boot hydration — Supabase'dan joriy oy yozuvlarini tortish
+// ------------------------------------------------------------
+// Birinchi bo'lib chaqirilganda fonda ishga tushadi. Local data
+// bilan merge'ga uchraydi va localStorage'ga yoziladi.
+// ============================================================
+function getCurrentMonthStartIso() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  return `${year}-${month}-01`;
+}
+
+function mergeModule102Entries(localItems = [], remoteItems = []) {
+  const byId = new Map();
+
+  // Local items eng oldin — ular trekları/audit'lari to'liqroq bo'lishi mumkin
+  localItems.forEach((item) => {
+    if (item?.id) byId.set(item.id, item);
+  });
+
+  // Remote items — agar updated_at yangiroq bo'lsa, almashtir
+  remoteItems.forEach((remote) => {
+    if (!remote?.id) return;
+    const local = byId.get(remote.id);
+    if (!local) {
+      byId.set(remote.id, remote);
+      return;
+    }
+    const remoteTime = new Date(remote.updatedAt || 0).getTime();
+    const localTime = new Date(local.updatedAt || 0).getTime();
+    if (remoteTime > localTime) byId.set(remote.id, remote);
+  });
+
+  return Array.from(byId.values()).sort(
+    (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0),
+  );
+}
+
+export function hydrateModule102FromRemoteInBackground() {
+  if (typeof window === 'undefined' || module102RemoteHydrationStarted) return;
+  if (!isSupabaseEnabled) return;
+  module102RemoteHydrationStarted = true;
+
+  window.setTimeout(async () => {
+    let success = false;
+    try {
+      const probe = await testModule102SupabaseConnection();
+      if (!probe.ok) return;
+
+      // Boot — faqat joriy oy (boshqa oraliqlar filtr orqali yuklanadi)
+      const monthStart = getCurrentMonthStartIso();
+      const remote = await fetchModule102EntriesRemote({ dateFrom: monthStart });
+      if (!Array.isArray(remote)) return;
+
+      const localItems = loadFromStorage() || [];
+      const merged = mergeModule102Entries(localItems, remote);
+
+      if (JSON.stringify(localItems) !== JSON.stringify(merged)) {
+        saveToStorage(merged);
+      }
+      success = true;
+    } catch (error) {
+      console.warn('[module102] hydrate xato:', error?.message || error);
+    } finally {
+      // Muvaffaqiyatsiz bo'lsa, flag'ni qaytar — keyingi safar qayta urinish
+      if (!success) module102RemoteHydrationStarted = false;
+    }
+  }, 0);
+}
+
+// ============================================================
+// On-demand hydration sana oraliq filtri uchun
+// ============================================================
+export async function hydrateModule102ByDateRange(from, to) {
+  if (typeof window === 'undefined') return { ok: false };
+  if (!isSupabaseEnabled) return { ok: false, reason: 'remote-disabled' };
+
+  try {
+    const remote = await fetchModule102EntriesRemote({
+      dateFrom: from || null,
+      dateTo: to || null,
+    });
+    const localItems = loadFromStorage() || [];
+    const merged = mergeModule102Entries(localItems, remote);
+
+    if (JSON.stringify(localItems) !== JSON.stringify(merged)) {
+      saveToStorage(merged);
+    }
+    return { ok: true, fetchedCount: remote.length, totalCount: merged.length };
+  } catch (error) {
+    return { ok: false, error: String(error?.message || error) };
+  }
+}
+
 function loadSyncMeta() {
   try {
     const raw = localStorage.getItem(SYNC_META_KEY);
@@ -63,9 +203,13 @@ function saveSyncMeta(meta) {
 export function getModule102Entries() {
   let items = loadFromStorage();
   if (!items) {
+    // Bo'sh device — Supabase'dan tortishni boshlaymiz, lekin seed ni
+    // ham qo'yamiz (Supabase javob bermaguncha kamida demo ko'rinadi)
     items = module102Seed.map(normalizeEntry);
     saveToStorage(items);
   }
+  // Birinchi chaqiruvda — Supabase'dan joriy oyni fonda tortish
+  hydrateModule102FromRemoteInBackground();
   return items;
 }
 
@@ -118,6 +262,9 @@ export function createComplaint({ phone, customerName = '', tracks = [], courier
 
   const next = [...entries, ...items];
   saveToStorage(next);
+
+  // Supabase'ga ham yangi yozuvlarni jo'natish (fonda, debounced)
+  entries.forEach(scheduleRemoteSync);
 
   // Audit log
   entries.forEach((entry) => {
@@ -181,6 +328,7 @@ export function updateTrackInComplaint(entryId, trackId, updates, options = {}) 
   };
 
   saveToStorage(items);
+  scheduleRemoteSync(items[index]); // Supabase'ga yangilashni jo'natish
 
   // Audit log
   appendAuditLog(entryId, {
@@ -256,6 +404,7 @@ export function upsertModule102Entry(entry) {
   }
 
   saveToStorage(items);
+  scheduleRemoteSync(items[index >= 0 ? index : 0]); // Supabase sync
 
   if (normalized.status === 'finansga_yuborish') {
     syncFinansToCompensated(normalized);
