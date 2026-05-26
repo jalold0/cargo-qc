@@ -54,6 +54,11 @@ import {
   subscribeToOtkData,
   toDateKey,
 } from '../services/localData';
+import {
+  getWarehouseReturns,
+  subscribeToWarehouseReturns,
+} from '../services/warehouseData';
+import { Warehouse } from 'lucide-react';
 import { buildDepartmentStatsAligned as buildUnifiedDepartmentStats } from '../services/departmentAnalytics';
 import { isAdminRole, isManagerRole } from '../services/access';
 import { exportMonthlyReportWorkbook } from '../services/monthlyReportExport';
@@ -416,6 +421,7 @@ export default function DashboardPage() {
   const [settings, setSettings] = useState(() => getOtkSettings());
   const [compensatedRegistry, setCompensatedRegistry] = useState(() => getCompensatedLoadRegistry());
   const [recoveredCompensatedLoads, setRecoveredCompensatedLoads] = useState(() => getRecoveredCompensatedLoads());
+  const [warehouseReturns, setWarehouseReturns] = useState(() => getWarehouseReturns());
   const [systemUsers, setSystemUsers] = useState(() => getSystemUsers());
   const [auditLogs, setAuditLogs] = useState(() => getOtkAuditLogs());
   const [stats, setStats] = useState(() => {
@@ -446,6 +452,69 @@ export default function DashboardPage() {
     () => buildUnifiedDepartmentStats(allRecords, systemUsers, settings.problemTypes || [], departmentSelectedMonth, departmentSelectedYear),
     [allRecords, systemUsers, settings.problemTypes, departmentSelectedMonth, departmentSelectedYear]
   );
+
+  // ============================================================
+  // Toshkent ombori statistikasi — bosh sahifa ichidagi mini-dashboard
+  // ------------------------------------------------------------
+  // CEO/Rahbar uchun: omborga qaytgan yuklarning umumiy holati,
+  // 104 da topilganlari va eng faol muammo turlari.
+  // Sana filtri va davriy filtrlar bilan moslashadi.
+  // ============================================================
+  const warehouseStats = useMemo(() => {
+    const compensatedTracksSet = new Set(
+      (compensatedRegistry || []).map((item) => String(item.trackCode || '').trim()).filter(Boolean),
+    );
+
+    // Sana filtriga moslab kesamiz
+    const fromTime = dateRange?.from ? new Date(dateRange.from).getTime() : null;
+    const toTime = dateRange?.to ? new Date(dateRange.to).getTime() + 86_399_000 : null;
+    const filtered = (warehouseReturns || []).filter((item) => {
+      const t = new Date(item.returnDate || item.createdAt || 0).getTime();
+      if (fromTime && t < fromTime) return false;
+      if (toTime && t > toTime) return false;
+      return true;
+    });
+
+    const todayKey = new Date().toDateString();
+    let todayCount = 0;
+    let matchedIn104 = 0;
+    const byProblem = new Map();
+    const byResponsible = new Map();
+
+    filtered.forEach((item) => {
+      if (new Date(item.returnDate || item.createdAt).toDateString() === todayKey) {
+        todayCount += 1;
+      }
+      if (item.trackCode && compensatedTracksSet.has(item.trackCode)) {
+        matchedIn104 += 1;
+      }
+      const problem = (item.problemType || '').trim() || "Ko'rsatilmagan";
+      byProblem.set(problem, (byProblem.get(problem) || 0) + 1);
+      const resp = (item.responsible || '').trim() || "Belgilanmagan";
+      byResponsible.set(resp, (byResponsible.get(resp) || 0) + 1);
+    });
+
+    const topProblems = Array.from(byProblem.entries())
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5);
+
+    const topResponsibles = Array.from(byResponsible.entries())
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5);
+
+    return {
+      total: filtered.length,
+      totalAllTime: warehouseReturns?.length || 0,
+      todayCount,
+      matchedIn104,
+      onlyInWarehouse: filtered.length - matchedIn104,
+      matchPercent: filtered.length ? Math.round((matchedIn104 / filtered.length) * 100) : 0,
+      topProblems,
+      topResponsibles,
+    };
+  }, [warehouseReturns, compensatedRegistry, dateRange?.from, dateRange?.to]);
   const employeeTotals = useMemo(() => summarizeEmployees(employeeStats), [employeeStats]);
   const compensatedOverview = useMemo(
     () => buildCompensatedOverview(compensatedRegistry, recoveredCompensatedLoads),
@@ -602,6 +671,12 @@ export default function DashboardPage() {
 
     return subscribeToOtkData(syncDashboard, { debounceMs: 90 });
   }, [dateRange, monthlyReportYear]);
+
+  // Toshkent ombori — alohida subscription
+  useEffect(() => {
+    const sync = () => setWarehouseReturns(getWarehouseReturns());
+    return subscribeToWarehouseReturns(sync);
+  }, []);
 
   // ============================================================
   // Sana filtri o'zgarganda Supabase'dan o'sha oraliqni tortish
@@ -887,6 +962,73 @@ export default function DashboardPage() {
             </div>
           </div>
         ))}
+      </section>
+
+      {/* ======== TOSHKENT OMBORI mini-dashboard (CEO view) ======== */}
+      <section className="overflow-hidden rounded-2xl border border-amber-200 bg-gradient-to-br from-amber-50/60 via-white to-orange-50/40 shadow-sm dark:border-amber-500/20 dark:from-amber-500/5 dark:via-slate-900 dark:to-orange-500/5">
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-amber-200/60 px-4 py-3 dark:border-amber-500/20">
+          <div className="flex items-center gap-3">
+            <div className="rounded-xl bg-gradient-to-br from-amber-400 to-orange-500 p-2 text-white shadow-md">
+              <Warehouse size={18} />
+            </div>
+            <div>
+              <h2 className="text-base font-semibold text-slate-950 dark:text-white">Toshkent ombori</h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Omborga qaytgan yuklar va 104 — Moliya bilan moslashuv
+              </p>
+            </div>
+          </div>
+          <Link
+            to="/warehouse"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-white/80 px-3 py-1.5 text-xs font-semibold text-amber-700 transition hover:bg-amber-50 dark:border-amber-500/30 dark:bg-slate-900 dark:text-amber-300"
+          >
+            Bo'limga o'tish →
+          </Link>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 p-3 sm:grid-cols-4">
+          <WarehouseStat
+            label="Jami qaytaruvlar"
+            value={warehouseStats.total.toLocaleString('ru-RU')}
+            sub={`Davr bo'yicha · jami: ${warehouseStats.totalAllTime.toLocaleString('ru-RU')}`}
+            tone="amber"
+          />
+          <WarehouseStat
+            label="Bugun"
+            value={warehouseStats.todayCount.toLocaleString('ru-RU')}
+            sub="Bugun qabul qilindi"
+            tone="sky"
+          />
+          <WarehouseStat
+            label="104 da topilgan"
+            value={warehouseStats.matchedIn104.toLocaleString('ru-RU')}
+            sub={`${warehouseStats.matchPercent}% — Topilgan yuk sifatida`}
+            tone="emerald"
+          />
+          <WarehouseStat
+            label="Faqat omborda"
+            value={warehouseStats.onlyInWarehouse.toLocaleString('ru-RU')}
+            sub="104'da hozircha yo'q"
+            tone="slate"
+          />
+        </div>
+
+        {(warehouseStats.topProblems.length > 0 || warehouseStats.topResponsibles.length > 0) && (
+          <div className="grid gap-3 border-t border-amber-200/60 p-3 sm:grid-cols-2 dark:border-amber-500/20">
+            <WarehouseTopList
+              title="Muammo turlari (top 5)"
+              items={warehouseStats.topProblems}
+              total={warehouseStats.total}
+              emptyText="Davr bo'yicha qaytaruv yo'q"
+            />
+            <WarehouseTopList
+              title="Mas'ul hodimlar (top 5)"
+              items={warehouseStats.topResponsibles}
+              total={warehouseStats.total}
+              emptyText="Davr bo'yicha qaytaruv yo'q"
+            />
+          </div>
+        )}
       </section>
 
       <section className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
@@ -2343,6 +2485,69 @@ function DashboardSelect({ value, onChange, options, labels = {} }) {
         </option>
       ))}
     </select>
+  );
+}
+
+// ============================================================
+// Toshkent ombori mini-dashboard yordamchilari
+// ============================================================
+function WarehouseStat({ label, value, sub, tone = 'amber' }) {
+  const tones = {
+    amber: 'from-amber-400 to-orange-500 text-amber-700 dark:text-amber-300',
+    sky: 'from-sky-400 to-blue-500 text-sky-700 dark:text-sky-300',
+    emerald: 'from-emerald-400 to-green-500 text-emerald-700 dark:text-emerald-300',
+    slate: 'from-slate-400 to-slate-500 text-slate-700 dark:text-slate-300',
+  };
+  const toneText = tones[tone] || tones.amber;
+  return (
+    <div className="rounded-xl border border-white/60 bg-white p-3 shadow-sm dark:border-slate-700/60 dark:bg-slate-900/80">
+      <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+        {label}
+      </p>
+      <p className={clsx('mt-1 text-2xl font-extrabold tracking-tight', toneText.split(' ').slice(2).join(' '))}>
+        {value}
+      </p>
+      {sub && (
+        <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+          {sub}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function WarehouseTopList({ title, items, total, emptyText }) {
+  return (
+    <div className="rounded-xl border border-white/60 bg-white p-3 shadow-sm dark:border-slate-700/60 dark:bg-slate-900/80">
+      <p className="mb-2 text-xs font-semibold text-slate-700 dark:text-slate-200">{title}</p>
+      {items.length === 0 ? (
+        <p className="text-xs text-slate-400 dark:text-slate-500">{emptyText}</p>
+      ) : (
+        <ul className="space-y-1.5">
+          {items.map((item) => {
+            const pct = total ? Math.round((item.count / total) * 100) : 0;
+            return (
+              <li key={item.name} className="space-y-1">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="truncate text-slate-600 dark:text-slate-300" title={item.name}>
+                    {item.name}
+                  </span>
+                  <span className="ml-2 shrink-0 font-semibold text-slate-900 dark:text-slate-100">
+                    {item.count} · {pct}%
+                  </span>
+                </div>
+                <div className="h-1.5 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-amber-400 to-orange-500"
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
   );
 }
 
