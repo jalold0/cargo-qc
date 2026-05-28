@@ -35,6 +35,7 @@ import {
   migrateVozvratToWarehouse,
 } from '../services/warehouseData';
 import { getOtkSettings, getSystemUsers } from '../services/localData';
+import { getTrackInfo } from '../services/trackDatabase';
 import { useAuthStore } from '../store/authStore';
 import { isAdminRole } from '../services/access';
 
@@ -235,7 +236,15 @@ export default function WarehousePage() {
       toast.error("Hech bo'lmaganda 1 ta trek kiriting");
       return;
     }
-    const rows = lines.map((trackCode) => ({ trackCode }));
+    // Har bir trek uchun bazadan mijoz ma'lumotlarini tortib olamiz
+    const rows = lines.map((trackCode) => {
+      const info = getTrackInfo(trackCode);
+      return {
+        trackCode,
+        customerName: info?.customer || '',
+        customerPhone: info?.phone || '',
+      };
+    });
     // Mas'ul hodim — login qilgan user, qo'lda tanlash kerak emas
     const commonWithUser = {
       ...bulkCommon,
@@ -297,11 +306,23 @@ export default function WarehousePage() {
             }
           }
 
+          // Excel'da mijoz/telefon bo'lmasa — bazadan tortib olamiz
+          let excelPhone = phoneKey ? String(row[phoneKey] || '').trim() : '';
+          let excelCustomer = customerKey ? String(row[customerKey] || '').trim() : '';
+
+          if (!excelPhone || !excelCustomer) {
+            const trackInfo = getTrackInfo(trackCode);
+            if (trackInfo) {
+              if (!excelPhone) excelPhone = trackInfo.phone || '';
+              if (!excelCustomer) excelCustomer = trackInfo.customer || '';
+            }
+          }
+
           return {
             trackCode,
             returnDate,
-            customerPhone: phoneKey ? String(row[phoneKey] || '').trim() : '',
-            customerName: customerKey ? String(row[customerKey] || '').trim() : '',
+            customerPhone: excelPhone,
+            customerName: excelCustomer,
             problemType: problemKey ? String(row[problemKey] || '').trim() : '',
             responsible: currentUserName, // Login qilgan user hisobiga
             note: noteKey ? String(row[noteKey] || '').trim() : '',
@@ -973,6 +994,25 @@ function FilterSelect({ label, value, onChange, options }) {
 }
 
 function FormModal({ title, onClose, form, updateForm, problemTypes, currentUserName, onSubmit, submitLabel }) {
+  // Trek raqami yozilsa — bazadan mijoz ma'lumotlarini tortib olish
+  const trackPreview = useMemo(() => {
+    const code = String(form.trackCode || '').trim();
+    if (code.length < 4) return null;
+    return getTrackInfo(code);
+  }, [form.trackCode]);
+
+  // Trek o'zgarganda bo'sh customer maydonlarini bazadan to'ldirish
+  useEffect(() => {
+    if (!trackPreview) return;
+    if (!form.customerName && trackPreview.customer) {
+      updateForm('customerName', trackPreview.customer);
+    }
+    if (!form.customerPhone && trackPreview.phone) {
+      updateForm('customerPhone', trackPreview.phone);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trackPreview]);
+
   return (
     <div className="fixed inset-0 z-[400] flex items-center justify-center bg-slate-900/60 p-4">
       <div className="w-full max-w-lg rounded-2xl bg-white p-5 shadow-2xl dark:bg-slate-900">
@@ -992,9 +1032,38 @@ function FormModal({ title, onClose, form, updateForm, problemTypes, currentUser
               required
               value={form.trackCode}
               onChange={(e) => updateForm('trackCode', e.target.value)}
-              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+              placeholder="Masalan: YT8859171872977"
+              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
             />
           </Field>
+
+          {/* BAZADAN — trek bo'yicha avtomatik ma'lumotlar */}
+          {trackPreview && (
+            <div className="rounded-xl border border-blue-200 bg-blue-50/60 p-3 dark:border-blue-500/20 dark:bg-blue-500/10">
+              <div className="mb-2 flex items-center gap-2">
+                <span className="rounded-md bg-blue-600 px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wider text-white">
+                  ● Bazadan
+                </span>
+                <span className="text-xs text-slate-600 dark:text-slate-300">
+                  Trek bo'yicha avtomatik ma'lumotlar
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                    Mijoz
+                  </p>
+                  <p className="font-semibold text-slate-900 dark:text-white">{trackPreview.customer}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                    Telefon
+                  </p>
+                  <p className="font-semibold text-slate-900 dark:text-white">{trackPreview.phone}</p>
+                </div>
+              </div>
+            </div>
+          )}
           <Field label="Muammo turi">
             <select
               value={form.problemType}
