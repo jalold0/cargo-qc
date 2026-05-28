@@ -499,13 +499,6 @@ export default function WarehousePage() {
           </div>
           <div className="ml-auto flex flex-wrap gap-1.5">
             <button
-              onClick={downloadTemplate}
-              className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
-            >
-              <Download size={13} />
-              Namuna
-            </button>
-            <button
               onClick={openImportModal}
               className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
             >
