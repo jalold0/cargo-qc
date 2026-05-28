@@ -8,6 +8,7 @@ import {
   ChevronRight,
   Clock,
   Download,
+  Eraser,
   Eye,
   Filter,
   MessageSquare,
@@ -90,6 +91,11 @@ export default function WarehousePage() {
   const [importPreview, setImportPreview] = useState(null);
   const [importMode, setImportMode] = useState('merge'); // 'merge' yoki 'replace'
   const [importing, setImporting] = useState(false);
+
+  // Hammasini tozalash (faqat admin)
+  const [clearAllOpen, setClearAllOpen] = useState(false);
+  const [clearingAll, setClearingAll] = useState(false);
+  const [clearConfirmText, setClearConfirmText] = useState('');
 
   const fileInputRef = useRef(null);
 
@@ -440,6 +446,22 @@ export default function WarehousePage() {
 
   const dismissMigration = () => setMigrationDismissed(true);
 
+  // Hammasini tozalash — faqat admin, tasdiqlash bilan
+  const runClearAll = async () => {
+    if (!isAdmin) return;
+    setClearingAll(true);
+    await new Promise((r) => setTimeout(r, 100));
+    const result = replaceAllWarehouseReturns([]);
+    setClearingAll(false);
+    setClearAllOpen(false);
+    setClearConfirmText('');
+    if (result.ok) {
+      toast.success(`${result.removed.toLocaleString('ru-RU')} ta yozuv tozalandi`);
+    } else {
+      toast.error('Tozalashda xato');
+    }
+  };
+
   const runMigration = async () => {
     setMigrationLoading(true);
     await new Promise((r) => setTimeout(r, 100));
@@ -512,6 +534,20 @@ export default function WarehousePage() {
               <Plus size={13} />
               Yangi qaytaruv
             </button>
+            {/* Hammasini tozalash — faqat admin uchun (xavfli amal) */}
+            {isAdmin && items.length > 0 && (
+              <button
+                onClick={() => {
+                  setClearConfirmText('');
+                  setClearAllOpen(true);
+                }}
+                title="Barcha yozuvlarni o'chirish"
+                className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-rose-600 transition hover:bg-rose-50 dark:border-rose-500/30 dark:bg-slate-900 dark:text-rose-300 dark:hover:bg-rose-500/10"
+              >
+                <Eraser size={13} />
+                Tozalash
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -698,6 +734,57 @@ export default function WarehousePage() {
             </div>
           )}
         </>
+      )}
+
+      {/* Hammasini tozalash — tasdiqlash modali (faqat admin) */}
+      {clearAllOpen && isAdmin && (
+        <div className="fixed inset-0 z-[450] flex items-center justify-center bg-slate-900/60 p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl dark:bg-slate-900">
+            <div className="flex items-start gap-3">
+              <div className="rounded-xl bg-rose-50 p-2.5 text-rose-600 dark:bg-rose-500/10 dark:text-rose-300">
+                <AlertTriangle size={20} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <h3 className="text-base font-semibold text-slate-900 dark:text-white">
+                  Hammasini tozalash
+                </h3>
+                <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
+                  Toshkent omboridagi <b className="text-rose-600 dark:text-rose-300">{items.length.toLocaleString('ru-RU')} ta</b> yozuv
+                  butunlay o'chiriladi (lokal va Supabase'dan). Bu amal qaytarilmaydi.
+                </p>
+                <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
+                  Tasdiqlash uchun pastdagi maydonga <b>TOZALASH</b> deb yozing:
+                </p>
+                <input
+                  value={clearConfirmText}
+                  onChange={(e) => setClearConfirmText(e.target.value)}
+                  placeholder="TOZALASH"
+                  className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-mono tracking-wider dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                  autoFocus
+                />
+              </div>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                disabled={clearingAll}
+                onClick={() => {
+                  setClearAllOpen(false);
+                  setClearConfirmText('');
+                }}
+                className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+              >
+                Bekor qilish
+              </button>
+              <button
+                disabled={clearingAll || clearConfirmText.trim().toUpperCase() !== 'TOZALASH'}
+                onClick={runClearAll}
+                className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-bold text-white hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {clearingAll ? "Tozalanmoqda…" : "Ha, hammasini o'chir"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Floating delete confirm (Murojaatlar bilan bir xil) */}
