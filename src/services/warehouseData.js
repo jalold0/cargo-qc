@@ -369,6 +369,44 @@ export function deleteWarehouseReturn(id) {
 }
 
 // ============================================================
+// REPLACE — barcha mavjud yozuvlarni o'chirib, yangi list bilan
+// to'ldirish (Excel "To'liq almashtirish" rejimi uchun)
+// Eslatma: Supabase'da soft-delete fonda — UI darrov yangilanadi.
+// ============================================================
+export function replaceAllWarehouseReturns(newRows = []) {
+  const oldItems = getWarehouseReturns();
+  const created = [];
+  const existingTracks = new Set();
+
+  newRows.forEach((row) => {
+    const trackCode = String(row?.trackCode || '').trim();
+    if (!trackCode || existingTracks.has(trackCode)) return;
+    existingTracks.add(trackCode);
+    const entry = normalizeEntry({
+      ...row,
+      trackCode,
+      id: generateId(),
+    });
+    created.push(entry);
+  });
+
+  saveToStorage(created);
+
+  // Supabase'ga yangi yozuvlarni jo'natish
+  created.forEach((e) => scheduleRemoteSync(e));
+
+  // Eski yozuvlarni Supabase'dan soft-delete (fonda, parallel)
+  if (isSupabaseEnabled) {
+    const oldIds = oldItems.map((it) => it.id).filter(Boolean);
+    if (oldIds.length) {
+      Promise.allSettled(oldIds.map((id) => deleteWarehouseReturnRemote(id))).catch(() => {});
+    }
+  }
+
+  return { ok: true, replaced: created.length, removed: oldItems.length };
+}
+
+// ============================================================
 // MIGRATSIYA: OTK complaints'da problemType="Vozvrat" treklarini
 // Toshkent omboriga ko'chirish
 // ------------------------------------------------------------

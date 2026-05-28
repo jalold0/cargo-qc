@@ -31,6 +31,7 @@ import {
   bulkCreateWarehouseReturns,
   deleteWarehouseReturn,
   updateWarehouseReturn,
+  replaceAllWarehouseReturns,
   previewVozvratCandidates,
   migrateVozvratToWarehouse,
 } from '../services/warehouseData';
@@ -83,6 +84,12 @@ export default function WarehousePage() {
   const [migrationDismissed, setMigrationDismissed] = useState(false);
   const [migrationModalOpen, setMigrationModalOpen] = useState(false);
   const [migrationLoading, setMigrationLoading] = useState(false);
+
+  // Excel import (Murojaatlar dizayniga o'xshash modal)
+  const [importModalOpen, setImportModalOpen] = useState(false);
+  const [importPreview, setImportPreview] = useState(null);
+  const [importMode, setImportMode] = useState('merge'); // 'merge' yoki 'replace'
+  const [importing, setImporting] = useState(false);
 
   const fileInputRef = useRef(null);
 
@@ -259,6 +266,12 @@ export default function WarehousePage() {
     setBulkOpen(false);
   };
 
+  const openImportModal = () => {
+    setImportPreview(null);
+    setImportMode('merge');
+    setImportModalOpen(true);
+  };
+
   const triggerFilePick = () => {
     fileInputRef.current?.click();
   };
@@ -266,6 +279,7 @@ export default function WarehousePage() {
   const handleExcelFile = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
+    setImporting(true);
 
     try {
       const buffer = await file.arrayBuffer();
@@ -334,17 +348,48 @@ export default function WarehousePage() {
       if (!mapped.length) {
         toast.error("Excel'da trek raqami topilmadi");
         event.target.value = '';
+        setImporting(false);
         return;
       }
 
-      const result = bulkCreateWarehouseReturns(mapped);
-      toast.success(
-        `${result.created} ta trek qo'shildi${result.skipped ? ` · ${result.skipped} ta o'tkazib yuborildi` : ''}`,
-      );
+      // PREVIEW — darrov import qilmaymiz. Foydalanuvchi modalda
+      // "Qo'llash" tugmasini bosgandan keyin amalga oshiriladi.
+      setImportPreview({
+        fileName: file.name,
+        totalRows: mapped.length,
+        preview: mapped.slice(0, 50), // dastlab 50 ta qator preview uchun
+        entries: mapped,
+      });
     } catch (error) {
       toast.error(`Excel xato: ${error?.message || 'noma\'lum'}`);
     }
+    setImporting(false);
     event.target.value = '';
+  };
+
+  // Apply import — modal ichidagi "Qo'llash" tugmasi bosilganda
+  const applyImport = async () => {
+    if (!importPreview?.entries?.length) return;
+    setImporting(true);
+    try {
+      if (importMode === 'replace') {
+        const result = replaceAllWarehouseReturns(importPreview.entries);
+        toast.success(
+          `Almashtirildi: ${result.replaced} ta yangi · ${result.removed} ta eski o'chirildi`,
+        );
+      } else {
+        const result = bulkCreateWarehouseReturns(importPreview.entries);
+        toast.success(
+          `${result.created} ta trek qo'shildi${result.skipped ? ` · ${result.skipped} ta o'tkazib yuborildi` : ''}`,
+        );
+      }
+      setImportPreview(null);
+      setImportModalOpen(false);
+    } catch (error) {
+      toast.error(`Importda xato: ${error?.message || 'noma\'lum'}`);
+    } finally {
+      setImporting(false);
+    }
   };
 
   const downloadTemplate = () => {
@@ -438,7 +483,7 @@ export default function WarehousePage() {
             </button>
             {isAdmin && (
               <button
-                onClick={triggerFilePick}
+                onClick={openImportModal}
                 className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
               >
                 <Upload size={13} />
@@ -453,13 +498,6 @@ export default function WarehousePage() {
               <Download size={13} />
               Export
             </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".xlsx,.xls"
-              onChange={handleExcelFile}
-              className="hidden"
-            />
             <button
               onClick={() => setBulkOpen(true)}
               className="inline-flex items-center gap-1 rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-xs font-semibold text-sky-700 transition hover:bg-sky-100 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300"
@@ -816,6 +854,191 @@ export default function WarehousePage() {
                   Hammasini saqlash
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Excel Import modal (Murojaatlar dizayniga o'xshash) */}
+      {importModalOpen && (
+        <div className="fixed inset-0 z-[550] flex items-center justify-center bg-slate-950/50 p-4">
+          <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-4xl flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 dark:border-slate-800">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-950 dark:text-white">Excel import</h2>
+                <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                  Excel fayl nomi muhim emas. Shablondagi ustunlar bo'yicha preview bilan yuklang.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setImportModalOpen(false);
+                  setImportPreview(null);
+                }}
+                className="rounded-xl p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="flex-1 space-y-4 overflow-y-auto px-5 py-5">
+              {/* File picker row */}
+              <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-slate-800 dark:bg-slate-950/70 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <p className="text-sm font-semibold text-slate-950 dark:text-white">
+                    {importPreview?.fileName || 'WAREHOUSE_TEMPLATE.xlsx'}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                    {importPreview
+                      ? `${importPreview.totalRows.toLocaleString('ru-RU')} ta qator`
+                      : 'Excel fayl nomi muhim emas. Shablondagi ustunlar bo\'yicha preview bilan yuklang.'}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={triggerFilePick}
+                  disabled={importing}
+                  className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                >
+                  <Upload size={16} />
+                  {importing ? 'Yuklanmoqda…' : 'Fayl tanlash'}
+                </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".xlsx,.xls"
+                  onChange={handleExcelFile}
+                  className="hidden"
+                />
+              </div>
+
+              {/* Import mode (merge / replace) */}
+              <div className="grid gap-4 md:grid-cols-2">
+                <button
+                  type="button"
+                  onClick={() => setImportMode('merge')}
+                  className={clsx(
+                    'rounded-2xl border p-4 text-left transition',
+                    importMode === 'merge'
+                      ? 'border-emerald-200 bg-emerald-50 dark:border-emerald-500/20 dark:bg-emerald-500/10'
+                      : 'border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900',
+                  )}
+                >
+                  <p className="text-sm font-semibold text-slate-950 dark:text-white">Qo'shib import</p>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                    Mavjud ma'lumotlar saqlanadi, mos qatorlar yangilanadi.
+                  </p>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setImportMode('replace')}
+                  className={clsx(
+                    'rounded-2xl border p-4 text-left transition',
+                    importMode === 'replace'
+                      ? 'border-rose-200 bg-rose-50 dark:border-rose-500/20 dark:bg-rose-500/10'
+                      : 'border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900',
+                  )}
+                >
+                  <p className="text-sm font-semibold text-slate-950 dark:text-white">To'liq almashtirish</p>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                    Hozirgi ro'yxat Excel ma'lumotlari bilan almashtiriladi.
+                  </p>
+                </button>
+              </div>
+
+              {/* Template download */}
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-900">
+                <div>
+                  <p className="text-sm font-semibold text-slate-950 dark:text-white">Import shabloni</p>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                    Fayl nomi erkin. Ustunlar shu shablon bilan mos bo'lsa kifoya.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={downloadTemplate}
+                  className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                >
+                  <Download size={16} />
+                  Shablonni yuklab olish
+                </button>
+              </div>
+
+              {/* Preview table */}
+              <div className="rounded-2xl border border-slate-200 dark:border-slate-800">
+                <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3 dark:border-slate-800">
+                  <h3 className="text-sm font-semibold text-slate-950 dark:text-white">Ko'rib chiqish</h3>
+                  {importPreview && importPreview.totalRows > 50 && (
+                    <span className="text-xs text-slate-500 dark:text-slate-400">
+                      Dastlabki 50 ta qator ko'rsatilmoqda
+                    </span>
+                  )}
+                </div>
+                <div className="max-h-[320px] overflow-auto">
+                  {!importPreview ? (
+                    <div className="px-4 py-10 text-center text-sm text-slate-400">
+                      Ma'lumot yo'q. Fayl tanlang.
+                    </div>
+                  ) : (
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="sticky top-0 border-b border-slate-200 bg-slate-50 text-left dark:border-slate-800 dark:bg-slate-950/80">
+                          <th className="px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Sana</th>
+                          <th className="px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Trek</th>
+                          <th className="px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Muammo</th>
+                          <th className="px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Mijoz</th>
+                          <th className="px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Telefon</th>
+                          <th className="px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                        {importPreview.preview.map((row, idx) => (
+                          <tr key={`${row.trackCode}-${idx}`}>
+                            <td className="px-3 py-2 text-xs text-slate-600 dark:text-slate-300">
+                              {new Date(row.returnDate).toLocaleDateString('uz-UZ')}
+                            </td>
+                            <td className="px-3 py-2 font-mono text-xs text-slate-950 dark:text-white">{row.trackCode}</td>
+                            <td className="px-3 py-2 text-xs text-slate-700 dark:text-slate-200">
+                              {row.problemType || '—'}
+                            </td>
+                            <td className="px-3 py-2 text-xs text-slate-600 dark:text-slate-300">
+                              {row.customerName || '—'}
+                            </td>
+                            <td className="px-3 py-2 text-xs text-slate-600 dark:text-slate-300">
+                              {row.customerPhone || '—'}
+                            </td>
+                            <td className="px-3 py-2 text-xs text-slate-600 dark:text-slate-300">
+                              {row.status || 'qabul_qilindi'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t border-slate-200 bg-white px-5 py-4 dark:border-slate-800 dark:bg-slate-900">
+              <button
+                type="button"
+                onClick={() => {
+                  setImportModalOpen(false);
+                  setImportPreview(null);
+                }}
+                className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+              >
+                Yopish
+              </button>
+              <button
+                type="button"
+                disabled={!importPreview?.entries?.length || importing}
+                onClick={applyImport}
+                className="rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-50 dark:bg-white dark:text-slate-950 dark:hover:bg-slate-200"
+              >
+                {importing ? 'Bajarilmoqda…' : 'Qo\'llash'}
+              </button>
             </div>
           </div>
         </div>
