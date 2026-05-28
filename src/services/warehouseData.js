@@ -19,11 +19,19 @@ import {
 
 const STORAGE_KEY = 'cargo-qc-warehouse-returns';
 const COMPENSATED_KEY = 'cargo-qc-compensated-registry';
+// localStorage cheklovi (5-10MB) tugamasligi uchun lokal cache'da
+// faqat eng so'nggi N yozuv saqlanadi. Qolganlari Supabase'da.
+// Sahifa qayta yuklansa, hydrate barchasini qaytarib oladi.
+const LOCAL_CACHE_LIMIT = 5000;
 
 const subscribers = new Set();
 let hydrationStarted = false;
 let remoteSyncTimer = null;
 const pendingRemoteUpserts = new Map();
+
+// In-memory mirror — localStorage quota tugaganda ham source of truth
+// shu joyda saqlanadi. Sahifa yopilmaguncha ishlaydi.
+let memoryCache = null;
 
 function notifySubscribers() {
   subscribers.forEach((cb) => {
@@ -36,11 +44,17 @@ function notifySubscribers() {
 }
 
 function loadFromStorage() {
+  // In-memory cache eng so'nggi truthsource
+  if (memoryCache) return memoryCache;
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : null;
+    if (Array.isArray(parsed)) {
+      memoryCache = parsed;
+      return parsed;
+    }
+    return null;
   } catch (error) {
     console.warn('[warehouse] storage parse error:', error);
     return null;
@@ -48,12 +62,29 @@ function loadFromStorage() {
 }
 
 function saveToStorage(items) {
+  // Memory cache to'liq saqlanadi (subscriber'lar bularni ko'radi)
+  memoryCache = Array.isArray(items) ? items : [];
+
+  // localStorage — quota tugamasligi uchun faqat eng so'nggi N yozuv
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
-    notifySubscribers();
+    const slice = memoryCache.slice(0, LOCAL_CACHE_LIMIT);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(slice));
   } catch (error) {
-    console.warn('[warehouse] storage save error:', error);
+    // Quota exceeded — ehtimol juda ko'p yozuv. Avval kichikroq slice
+    // yozishni urinib ko'ramiz.
+    try {
+      const smaller = memoryCache.slice(0, 500);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(smaller));
+      console.warn(
+        `[warehouse] storage quota tugadi, faqat oxirgi 500 yozuv saqlandi (jami ${memoryCache.length}). Qolganlari Supabase'da.`,
+      );
+    } catch {
+      console.warn('[warehouse] storage save xatosi:', error);
+    }
   }
+
+  // Memory cache'da hammasi bor — subscribers'ga doim xabar yetadi
+  notifySubscribers();
 }
 
 function normalizeEntry(entry) {
@@ -85,6 +116,37 @@ function generateId() {
 // ============================================================
 // Supabase sync (debounced batch)
 // ============================================================
+// Supabase POST hajmi cheklangan; 100 ta yozuvga bo'lib jo'natamiz.
+const REMOTE_BATCH_SIZE = 100;
+
+async function flushRemoteBatch(items) {
+  if (!items.length) return;
+  // Bo'laklarga ajratamiz
+  const chunks = [];
+  for (let i = 0; i < items.length; i += REMOTE_BATCH_SIZE) {
+    chunks.push(items.slice(i, i + REMOTE_BATCH_SIZE));
+  }
+  // Ketma-ket — Supabase'ni cho'kkitirmaslik uchun
+  for (const chunk of chunks) {
+    try {
+      if (chunk.length === 1) {
+        // eslint-disable-next-line no-await-in-loop
+        await upsertWarehouseReturnRemote(chunk[0]);
+      } else {
+        // eslint-disable-next-line no-await-in-loop
+        await bulkUpsertWarehouseReturnsRemote(chunk);
+      }
+    } catch (error) {
+      // Failed chunk pending'ga qaytariladi — keyingi safar urinib ko'riladi
+      chunk.forEach((item) => pendingRemoteUpserts.set(item.id, item));
+      console.warn(
+        `[warehouse] remote sync chunk xatosi (${chunk.length} yozuv):`,
+        error?.message || error,
+      );
+    }
+  }
+}
+
 function scheduleRemoteSync(entry) {
   if (typeof window === 'undefined' || !isSupabaseEnabled) return;
   if (!entry || !entry.id) return;
@@ -99,19 +161,7 @@ function scheduleRemoteSync(entry) {
     remoteSyncTimer = null;
     const batch = Array.from(pendingRemoteUpserts.values());
     pendingRemoteUpserts.clear();
-    if (!batch.length) return;
-
-    try {
-      if (batch.length === 1) {
-        await upsertWarehouseReturnRemote(batch[0]);
-      } else {
-        await bulkUpsertWarehouseReturnsRemote(batch);
-      }
-    } catch (error) {
-      // Network xatosi — qayta urinish uchun pending'ga qaytaramiz
-      batch.forEach((item) => pendingRemoteUpserts.set(item.id, item));
-      console.warn('[warehouse] remote sync xatosi:', error?.message || error);
-    }
+    await flushRemoteBatch(batch);
   }, 250);
 }
 
