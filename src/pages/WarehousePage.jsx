@@ -43,7 +43,6 @@ const ITEMS_PER_PAGE = 24;
 const INITIAL_FORM = {
   trackCode: '',
   problemType: '',
-  responsible: '',
   customerPhone: '',
   customerName: '',
   note: '',
@@ -73,7 +72,7 @@ export default function WarehousePage() {
   // Form state
   const [form, setForm] = useState(INITIAL_FORM);
   const [bulkTracks, setBulkTracks] = useState('');
-  const [bulkCommon, setBulkCommon] = useState({ problemType: '', responsible: '', note: '' });
+  const [bulkCommon, setBulkCommon] = useState({ problemType: '', note: '' });
 
   // Delete confirmation (floating popover like ComplaintsPage)
   const [deleteConfirm, setDeleteConfirm] = useState(null);
@@ -194,7 +193,11 @@ export default function WarehousePage() {
       toast.error('Trek raqami kerak');
       return;
     }
-    const result = createWarehouseReturn(form);
+    // Mas'ul hodim — login qilgan user
+    const result = createWarehouseReturn({
+      ...form,
+      responsible: user?.full_name || user?.username || '',
+    });
     if (!result.ok) {
       if (result.reason === 'duplicate') {
         toast.error(`Bu trek (${form.trackCode}) yaqinda omborga kiritilgan`);
@@ -233,12 +236,17 @@ export default function WarehousePage() {
       return;
     }
     const rows = lines.map((trackCode) => ({ trackCode }));
-    const result = bulkCreateWarehouseReturns(rows, bulkCommon);
+    // Mas'ul hodim — login qilgan user, qo'lda tanlash kerak emas
+    const commonWithUser = {
+      ...bulkCommon,
+      responsible: user?.full_name || user?.username || '',
+    };
+    const result = bulkCreateWarehouseReturns(rows, commonWithUser);
     toast.success(
       `${result.created} ta trek qo'shildi${result.skipped ? ` · ${result.skipped} ta o'tkazib yuborildi` : ''}`,
     );
     setBulkTracks('');
-    setBulkCommon({ problemType: '', responsible: '', note: '' });
+    setBulkCommon({ problemType: '', note: '' });
     setBulkOpen(false);
   };
 
@@ -256,25 +264,51 @@ export default function WarehousePage() {
       const sheet = workbook.Sheets[workbook.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
 
+      // Hodim ismi — login qilgan foydalanuvchi (excel'dagi "Name" ustun
+      // ahamiyat bermaymiz, hammasi joriy foydalanuvchi hisobiga yoziladi)
+      const currentUserName = user?.full_name || user?.username || '';
+
       const mapped = rows
         .map((row) => {
+          // Calon keylar: Excel ustun nomlarini ko'p variant orqali aniqlash
           const keys = Object.keys(row);
-          const trackKey = keys.find((k) => /trek|track/i.test(k)) || keys[0];
+          const trackKey = keys.find((k) => /track|trek/i.test(k)) || keys.find((k) => /^id$/i.test(k));
+          const dateKey = keys.find((k) => /date|sana/i.test(k));
           const phoneKey = keys.find((k) => /telefon|phone/i.test(k));
-          const nameKey = keys.find((k) => /mijoz|customer|ism/i.test(k));
+          const customerKey = keys.find((k) => /mijoz|customer/i.test(k));
           const problemKey = keys.find((k) => /muammo|problem/i.test(k));
-          const respKey = keys.find((k) => /mas|responsible|hodim/i.test(k));
-          const noteKey = keys.find((k) => /izoh|note/i.test(k));
+          const noteKey = keys.find((k) => /izoh|note|comment|coment/i.test(k));
+          const statusKey = keys.find((k) => /status|holat/i.test(k));
+
+          if (!trackKey) return null;
+          const trackCode = String(row[trackKey] || '').trim();
+          if (!trackCode) return null;
+
+          // Excel serial date → ISO. Excel epoch: 1900-01-01 = 1.
+          // Unix epoch farqi: 25569 kun. Bir kun: 86400 soniya.
+          let returnDate = new Date().toISOString();
+          if (dateKey && row[dateKey] !== '' && row[dateKey] != null) {
+            const rawDate = row[dateKey];
+            if (typeof rawDate === 'number' && rawDate > 1000) {
+              returnDate = new Date(Math.round((rawDate - 25569) * 86400 * 1000)).toISOString();
+            } else {
+              const parsed = new Date(rawDate);
+              if (!Number.isNaN(parsed.getTime())) returnDate = parsed.toISOString();
+            }
+          }
+
           return {
-            trackCode: String(row[trackKey] || '').trim(),
+            trackCode,
+            returnDate,
             customerPhone: phoneKey ? String(row[phoneKey] || '').trim() : '',
-            customerName: nameKey ? String(row[nameKey] || '').trim() : '',
+            customerName: customerKey ? String(row[customerKey] || '').trim() : '',
             problemType: problemKey ? String(row[problemKey] || '').trim() : '',
-            responsible: respKey ? String(row[respKey] || '').trim() : '',
+            responsible: currentUserName, // Login qilgan user hisobiga
             note: noteKey ? String(row[noteKey] || '').trim() : '',
+            status: statusKey ? String(row[statusKey] || 'qabul_qilindi').toLowerCase() : 'qabul_qilindi',
           };
         })
-        .filter((r) => r.trackCode);
+        .filter(Boolean);
 
       if (!mapped.length) {
         toast.error("Excel'da trek raqami topilmadi");
@@ -680,7 +714,7 @@ export default function WarehousePage() {
           form={form}
           updateForm={updateForm}
           problemTypes={problemTypes}
-          responsibleNames={responsibleNames}
+          currentUserName={user?.full_name || user?.username || ''}
           onSubmit={submitCreate}
           submitLabel="Saqlash"
         />
@@ -694,7 +728,7 @@ export default function WarehousePage() {
           form={editItem}
           updateForm={(key, value) => setEditItem((current) => ({ ...current, [key]: value }))}
           problemTypes={problemTypes}
-          responsibleNames={responsibleNames}
+          currentUserName={editItem.responsible || user?.full_name || user?.username || ''}
           onSubmit={submitEdit}
           submitLabel="Saqlash"
         />
@@ -723,28 +757,16 @@ export default function WarehousePage() {
                   className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-xs dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
                 />
               </Field>
-              <div className="grid grid-cols-2 gap-3">
-                <Field label="Umumiy muammo turi">
-                  <select
-                    value={bulkCommon.problemType}
-                    onChange={(e) => setBulkCommon((c) => ({ ...c, problemType: e.target.value }))}
-                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
-                  >
-                    <option value="">— Tanlang —</option>
-                    {problemTypes.map((p) => <option key={p} value={p}>{p}</option>)}
-                  </select>
-                </Field>
-                <Field label="Mas'ul hodim">
-                  <select
-                    value={bulkCommon.responsible}
-                    onChange={(e) => setBulkCommon((c) => ({ ...c, responsible: e.target.value }))}
-                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
-                  >
-                    <option value="">— Tanlang —</option>
-                    {responsibleNames.map((n) => <option key={n} value={n}>{n}</option>)}
-                  </select>
-                </Field>
-              </div>
+              <Field label="Umumiy muammo turi">
+                <select
+                  value={bulkCommon.problemType}
+                  onChange={(e) => setBulkCommon((c) => ({ ...c, problemType: e.target.value }))}
+                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                >
+                  <option value="">— Tanlang —</option>
+                  {problemTypes.map((p) => <option key={p} value={p}>{p}</option>)}
+                </select>
+              </Field>
               <Field label="Umumiy izoh">
                 <input
                   value={bulkCommon.note}
@@ -752,6 +774,13 @@ export default function WarehousePage() {
                   className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
                 />
               </Field>
+              <div className="flex items-center gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">
+                <UserIcon size={12} />
+                <span>
+                  Mas'ul hodim: <b>{user?.full_name || user?.username || 'Aniqlanmagan'}</b>
+                  <span className="ml-1 text-amber-600/70 dark:text-amber-300/70">(joriy hisob)</span>
+                </span>
+              </div>
               <div className="flex justify-end gap-2 pt-2">
                 <button
                   onClick={() => setBulkOpen(false)}
@@ -943,7 +972,7 @@ function FilterSelect({ label, value, onChange, options }) {
   );
 }
 
-function FormModal({ title, onClose, form, updateForm, problemTypes, responsibleNames, onSubmit, submitLabel }) {
+function FormModal({ title, onClose, form, updateForm, problemTypes, currentUserName, onSubmit, submitLabel }) {
   return (
     <div className="fixed inset-0 z-[400] flex items-center justify-center bg-slate-900/60 p-4">
       <div className="w-full max-w-lg rounded-2xl bg-white p-5 shadow-2xl dark:bg-slate-900">
@@ -966,28 +995,16 @@ function FormModal({ title, onClose, form, updateForm, problemTypes, responsible
               className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
             />
           </Field>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Muammo turi">
-              <select
-                value={form.problemType}
-                onChange={(e) => updateForm('problemType', e.target.value)}
-                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
-              >
-                <option value="">— Tanlang —</option>
-                {problemTypes.map((p) => <option key={p} value={p}>{p}</option>)}
-              </select>
-            </Field>
-            <Field label="Mas'ul hodim">
-              <select
-                value={form.responsible}
-                onChange={(e) => updateForm('responsible', e.target.value)}
-                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
-              >
-                <option value="">— Tanlang —</option>
-                {responsibleNames.map((n) => <option key={n} value={n}>{n}</option>)}
-              </select>
-            </Field>
-          </div>
+          <Field label="Muammo turi">
+            <select
+              value={form.problemType}
+              onChange={(e) => updateForm('problemType', e.target.value)}
+              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+            >
+              <option value="">— Tanlang —</option>
+              {problemTypes.map((p) => <option key={p} value={p}>{p}</option>)}
+            </select>
+          </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Mijoz telefoni">
               <input
@@ -1013,6 +1030,14 @@ function FormModal({ title, onClose, form, updateForm, problemTypes, responsible
               className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
             />
           </Field>
+          {/* Mas'ul hodim — avtomatik (login qilgan user) */}
+          <div className="flex items-center gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">
+            <UserIcon size={12} />
+            <span>
+              Mas'ul hodim: <b>{currentUserName || 'Aniqlanmagan'}</b>
+              <span className="ml-1 text-amber-600/70 dark:text-amber-300/70">(joriy hisob)</span>
+            </span>
+          </div>
           <div className="flex justify-end gap-2 pt-2">
             <button
               type="button"
