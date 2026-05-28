@@ -370,9 +370,11 @@ export default function WarehousePage() {
   // Apply import — modal ichidagi "Qo'llash" tugmasi bosilganda
   const applyImport = async () => {
     if (!importPreview?.entries?.length) return;
+    // Xavfsizlik: To'liq almashtirish faqat admin uchun
+    const effectiveMode = importMode === 'replace' && !isAdmin ? 'merge' : importMode;
     setImporting(true);
     try {
-      if (importMode === 'replace') {
+      if (effectiveMode === 'replace') {
         const result = replaceAllWarehouseReturns(importPreview.entries);
         toast.success(
           `Almashtirildi: ${result.replaced} ta yangi · ${result.removed} ta eski o'chirildi`,
@@ -481,15 +483,13 @@ export default function WarehousePage() {
               <Download size={13} />
               Namuna
             </button>
-            {isAdmin && (
-              <button
-                onClick={openImportModal}
-                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
-              >
-                <Upload size={13} />
-                Import
-              </button>
-            )}
+            <button
+              onClick={openImportModal}
+              className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+            >
+              <Upload size={13} />
+              Import
+            </button>
             <button
               onClick={exportExcel}
               disabled={!filteredItems.length}
@@ -913,8 +913,8 @@ export default function WarehousePage() {
                 />
               </div>
 
-              {/* Import mode (merge / replace) */}
-              <div className="grid gap-4 md:grid-cols-2">
+              {/* Import mode: oddiy hodimlarga faqat "Qo'shib import" */}
+              <div className={clsx('grid gap-4', isAdmin ? 'md:grid-cols-2' : 'md:grid-cols-1')}>
                 <button
                   type="button"
                   onClick={() => setImportMode('merge')}
@@ -930,21 +930,24 @@ export default function WarehousePage() {
                     Mavjud ma'lumotlar saqlanadi, mos qatorlar yangilanadi.
                   </p>
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setImportMode('replace')}
-                  className={clsx(
-                    'rounded-2xl border p-4 text-left transition',
-                    importMode === 'replace'
-                      ? 'border-rose-200 bg-rose-50 dark:border-rose-500/20 dark:bg-rose-500/10'
-                      : 'border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900',
-                  )}
-                >
-                  <p className="text-sm font-semibold text-slate-950 dark:text-white">To'liq almashtirish</p>
-                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                    Hozirgi ro'yxat Excel ma'lumotlari bilan almashtiriladi.
-                  </p>
-                </button>
+                {/* "To'liq almashtirish" — faqat admin uchun (xavfli amal) */}
+                {isAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => setImportMode('replace')}
+                    className={clsx(
+                      'rounded-2xl border p-4 text-left transition',
+                      importMode === 'replace'
+                        ? 'border-rose-200 bg-rose-50 dark:border-rose-500/20 dark:bg-rose-500/10'
+                        : 'border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900',
+                    )}
+                  >
+                    <p className="text-sm font-semibold text-slate-950 dark:text-white">To'liq almashtirish</p>
+                    <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                      Hozirgi ro'yxat Excel ma'lumotlari bilan almashtiriladi.
+                    </p>
+                  </button>
+                )}
               </div>
 
               {/* Template download */}

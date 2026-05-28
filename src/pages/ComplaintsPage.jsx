@@ -181,15 +181,18 @@ export default function ComplaintsPage() {
       return;
     }
 
+    // Xavfsizlik: To'liq almashtirish faqat admin uchun
+    const effectiveMode = importMode === 'replace' && !isAdmin ? 'merge' : importMode;
+
     try {
-      const result = importOtkEntries(importPreview.entries, { mode: importMode, actor: user });
+      const result = importOtkEntries(importPreview.entries, { mode: effectiveMode, actor: user });
       setEntries(getOtkEntries());
       setArchive(getOtkArchive());
       setView(result.active > 0 ? 'active' : 'archive');
       setLastImportReport({
         ...result,
         fileName: importPreview.fileName,
-        mode: importMode,
+        mode: effectiveMode,
         appliedAt: new Date().toISOString(),
       });
       setImportModalOpen(false);
@@ -252,15 +255,13 @@ export default function ComplaintsPage() {
             </div>
           </div>
           <div className="ml-auto flex flex-wrap gap-1.5">
-            {isAdmin && (
-              <button
-                onClick={openImportPicker}
-                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
-              >
-                <Upload size={13} />
-                Import
-              </button>
-            )}
+            <button
+              onClick={openImportPicker}
+              className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+            >
+              <Upload size={13} />
+              Import
+            </button>
             <button
               onClick={exportExcel}
               disabled={!filteredEntries.length}
@@ -586,7 +587,8 @@ export default function ComplaintsPage() {
                 </button>
               </div>
 
-              <div className="grid gap-4 md:grid-cols-2">
+              {/* Import mode: oddiy hodimlarga faqat "Qo'shib import" */}
+              <div className={clsx('grid gap-4', isAdmin ? 'md:grid-cols-2' : 'md:grid-cols-1')}>
                 <button
                   type="button"
                   onClick={() => setImportMode('merge')}
@@ -601,19 +603,21 @@ export default function ComplaintsPage() {
                   <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{t('importMergeDescription')}</p>
                 </button>
 
-                <button
-                  type="button"
-                  onClick={() => setImportMode('replace')}
-                  className={clsx(
-                    'rounded-2xl border p-4 text-left transition',
-                    importMode === 'replace'
-                      ? 'border-rose-200 bg-rose-50 dark:border-rose-500/20 dark:bg-rose-500/10'
-                      : 'border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900'
-                  )}
-                >
-                  <p className="text-sm font-semibold text-slate-950 dark:text-white">{t('importReplace')}</p>
-                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{t('importReplaceDescription')}</p>
-                </button>
+                {isAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => setImportMode('replace')}
+                    className={clsx(
+                      'rounded-2xl border p-4 text-left transition',
+                      importMode === 'replace'
+                        ? 'border-rose-200 bg-rose-50 dark:border-rose-500/20 dark:bg-rose-500/10'
+                        : 'border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900'
+                    )}
+                  >
+                    <p className="text-sm font-semibold text-slate-950 dark:text-white">{t('importReplace')}</p>
+                    <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{t('importReplaceDescription')}</p>
+                  </button>
+                )}
               </div>
 
               {importPreview && (
