@@ -340,13 +340,15 @@ export function buildDepartmentStatsAligned(
     const role = String(item?.role || '').trim().toLowerCase();
     return role === 'admin' || role === 'manager' || role === 'menejer';
   });
-  const leaderKeys = buildLeaderKeySet(leaders);
 
   const monthlyRecords = records.filter((entry) => toDateKey(entry?.date).startsWith(targetMonthPrefix));
-  const leaderMonthlyRecords = monthlyRecords.filter((entry) => {
-    const ownerKey = normalizePersonKey(entry?.handledBy || entry?.createdBy);
-    return ownerKey && leaderKeys.has(ownerKey);
-  });
+
+  // "Hodimlar kunlik oqimi" — barcha hodimlarning to'liq trek oqimi
+  // (faqat admin/manager rolidagi `handledBy` yozuvlari bilan emas).
+  // Sababi: Excel import qilingan yozuvlarning ko'pi `handledBy='OTK workplace'`
+  // bo'ladi va leader filtridan o'tmasdi → kunlik oqim juda kichik chiqardi.
+  // Endi oydagi hamma yozuvlar / oyning haqiqiy ish kunlari (Shanba ham
+  // ish kuni — faqat Yakshanba dam).
 
   const workloadSplit = monthlyRecords.reduce(
     (accumulator, entry) => {
@@ -361,12 +363,17 @@ export function buildDepartmentStatsAligned(
   );
 
   const workdaysElapsed = countWorkdays(targetYear, targetMonth, now);
-  const leaderDailyAverageRaw = workdaysElapsed ? leaderMonthlyRecords.length / workdaysElapsed : 0;
-  const leaderDailyFlow = roundMetric(leaderDailyAverageRaw);
+  // Butun jamoa kunlik oqimi — oyning JAMI yozuvlari / ish kunlari
+  const teamDailyAverageRaw = workdaysElapsed ? monthlyRecords.length / workdaysElapsed : 0;
+  const leaderDailyFlow = roundMetric(teamDailyAverageRaw);
   const leaderCount = leaders.length || 1;
-  const perEmployeeDailyFlow = roundMetric(leaderDailyAverageRaw / leaderCount);
-  const monthlyLeaderMinutes = leaderMonthlyRecords.reduce((sum, entry) => sum + getEntryEstimatedMinutes(entry, minutesLookup), 0);
-  const estimatedMinutes = workdaysElapsed ? Math.round(monthlyLeaderMinutes / workdaysElapsed) : 0;
+  const perEmployeeDailyFlow = roundMetric(teamDailyAverageRaw / leaderCount);
+  // Ish vaqti — har bir yozuvga muammo turi bo'yicha taxminiy daqiqalar
+  const monthlyTeamMinutes = monthlyRecords.reduce(
+    (sum, entry) => sum + getEntryEstimatedMinutes(entry, minutesLookup),
+    0
+  );
+  const estimatedMinutes = workdaysElapsed ? Math.round(monthlyTeamMinutes / workdaysElapsed) : 0;
   const perEmployeeMinutes = leaderCount ? Math.round(estimatedMinutes / leaderCount) : 0;
   const totalLeaderWorkMinutesPerDay = leaders.reduce((sum, leader) => sum + getUserWorkdayMinutes(leader), 0);
   const perEmployeeCapacityMinutes = leaderCount ? Math.round(totalLeaderWorkMinutesPerDay / leaderCount) : 0;
