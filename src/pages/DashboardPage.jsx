@@ -22,6 +22,7 @@ import {
   ShieldCheck,
   TrendingUp,
   Users2,
+  Warehouse,
   X,
 } from 'lucide-react';
 import {
@@ -43,6 +44,7 @@ import { clsx } from 'clsx';
 import toast from 'react-hot-toast';
 import {
   getAllOtkRecords,
+  getAssistantAiRequests,
   getCompensatedLoadRegistry,
   getOtkAuditLogs,
   getOtkDashboardStats,
@@ -58,7 +60,7 @@ import {
   getWarehouseReturns,
   subscribeToWarehouseReturns,
 } from '../services/warehouseData';
-import { Warehouse } from 'lucide-react';
+import { getModule102Entries, subscribeToModule102 } from '../services/module102Data';
 import { buildDepartmentStatsAligned as buildUnifiedDepartmentStats } from '../services/departmentAnalytics';
 import { isAdminRole, isManagerRole } from '../services/access';
 import { exportMonthlyReportWorkbook } from '../services/monthlyReportExport';
@@ -422,6 +424,12 @@ export default function DashboardPage() {
   const [compensatedRegistry, setCompensatedRegistry] = useState(() => getCompensatedLoadRegistry());
   const [recoveredCompensatedLoads, setRecoveredCompensatedLoads] = useState(() => getRecoveredCompensatedLoads());
   const [warehouseReturns, setWarehouseReturns] = useState(() => getWarehouseReturns());
+  const [module102Entries, setModule102Entries] = useState(() => {
+    try { return getModule102Entries(); } catch { return []; }
+  });
+  const [assistantAiRequests, setAssistantAiRequests] = useState(() => {
+    try { return getAssistantAiRequests(); } catch { return []; }
+  });
   const [systemUsers, setSystemUsers] = useState(() => getSystemUsers());
   const [auditLogs, setAuditLogs] = useState(() => getOtkAuditLogs());
   const [stats, setStats] = useState(() => {
@@ -448,37 +456,34 @@ export default function DashboardPage() {
     monthly_report = {},
   } = stats;
   const employeeStats = useMemo(() => buildEmployeeStats(employeeDateRange, allRecords, systemUsers), [employeeDateRange, allRecords, systemUsers]);
-  const departmentStatsRaw = useMemo(
-    () => buildUnifiedDepartmentStats(allRecords, systemUsers, settings.problemTypes || [], departmentSelectedMonth, departmentSelectedYear),
-    [allRecords, systemUsers, settings.problemTypes, departmentSelectedMonth, departmentSelectedYear]
+  // departmentStats — Murojaatlar + 102 OTK + Toshkent ombori + Assistent AI
+  // hammasi birga hisoblanadi. buildDepartmentStatsAligned() ichida
+  // extraSources orqali 4 manba ham forecast formulasiga ham kunlik oqim
+  // formulasiga qo'shiladi (workdaysElapsed, leaderDailyFlow, prognoz va h.k.).
+  const departmentStats = useMemo(
+    () => buildUnifiedDepartmentStats(
+      allRecords,
+      systemUsers,
+      settings.problemTypes || [],
+      departmentSelectedMonth,
+      departmentSelectedYear,
+      {
+        warehouse: warehouseReturns,
+        module102: module102Entries,
+        assistantAi: assistantAiRequests,
+      }
+    ),
+    [
+      allRecords,
+      systemUsers,
+      settings.problemTypes,
+      departmentSelectedMonth,
+      departmentSelectedYear,
+      warehouseReturns,
+      module102Entries,
+      assistantAiRequests,
+    ]
   );
-
-  // Rahbar ko'rinishidagi "Joriy oy trek oqimi" va kunlik oqim
-  // hisoblariga Toshkent ombori yozuvlarini ham qo'shamiz.
-  const departmentStats = useMemo(() => {
-    if (!departmentStatsRaw) return departmentStatsRaw;
-    const year = Number(departmentSelectedYear);
-    const month = Number(departmentSelectedMonth);
-    const whCount = (warehouseReturns || []).filter((item) => {
-      const d = new Date(item.returnDate || item.createdAt || 0);
-      return d.getFullYear() === year && d.getMonth() === month;
-    }).length;
-    if (whCount === 0) return departmentStatsRaw;
-    const monthlyTracks = (departmentStatsRaw.monthlyTracks || 0) + whCount;
-    // Asosiy oqim sifatida emas, "qo'shimcha ish" sifatida qo'shamiz —
-    // chunki Toshkent ombori vozvratlari odatda yordamchi ish
-    const extraTracks = (departmentStatsRaw.extraTrackCount || 0) + whCount;
-    const total = (departmentStatsRaw.coreTrackCount || 0) + extraTracks;
-    const coreShare = total ? Math.round(((departmentStatsRaw.coreTrackCount || 0) / total) * 100) : 0;
-    const extraShare = total ? 100 - coreShare : 0;
-    return {
-      ...departmentStatsRaw,
-      monthlyTracks,
-      extraTrackCount: extraTracks,
-      coreShare,
-      extraShare,
-    };
-  }, [departmentStatsRaw, warehouseReturns, departmentSelectedMonth, departmentSelectedYear]);
 
   // ============================================================
   // JAMI TREKLAR va HAL QILINGANLAR — Toshkent ombori ham qo'shiladi
@@ -502,15 +507,76 @@ export default function DashboardPage() {
     });
   }, [warehouseReturns, dateRange?.from, dateRange?.to]);
 
+  // ============================================================
+  // 102 — OTK — sana filtri bo'yicha flat trek ro'yxati
+  // ------------------------------------------------------------
+  // Har entry ichida tracks[] bor. Trek-based count uchun
+  // har trekni alohida flatten qilamiz (Murojaatlar bilan parallel).
+  // ============================================================
+  const filteredModule102Tracks = useMemo(() => {
+    const fromTime = dateRange?.from ? new Date(dateRange.from).getTime() : null;
+    const toTime = dateRange?.to ? new Date(dateRange.to).getTime() + 86_399_000 : null;
+    const out = [];
+    (module102Entries || []).forEach((entry) => {
+      const entryTime = new Date(entry.createdAt || 0).getTime();
+      if (fromTime && entryTime < fromTime) return;
+      if (toTime && entryTime > toTime) return;
+      const tracks = Array.isArray(entry.tracks) && entry.tracks.length > 0 ? entry.tracks : [{ id: entry.id }];
+      tracks.forEach((t) => {
+        out.push({
+          ...t,
+          parentSource: entry.source || 'manual',
+          parentCreatedAt: entry.createdAt,
+          parentStatus: entry.status,
+        });
+      });
+    });
+    return out;
+  }, [module102Entries, dateRange?.from, dateRange?.to]);
+
+  const filteredModule102Resolved = useMemo(() => {
+    return filteredModule102Tracks.filter((t) => {
+      const s = String(t.status || '').toLowerCase();
+      return s === 'yopildi' || String(t.parentStatus || '').toLowerCase() === 'yopildi';
+    }).length;
+  }, [filteredModule102Tracks]);
+
+  // ============================================================
+  // Assistant AI — sana filtri
+  // ============================================================
+  const filteredAssistantAi = useMemo(() => {
+    const fromTime = dateRange?.from ? new Date(dateRange.from).getTime() : null;
+    const toTime = dateRange?.to ? new Date(dateRange.to).getTime() + 86_399_000 : null;
+    return (assistantAiRequests || []).filter((item) => {
+      const t = new Date(item.createdAt || item.updatedAt || 0).getTime();
+      if (fromTime && t < fromTime) return false;
+      if (toTime && t > toTime) return false;
+      return true;
+    });
+  }, [assistantAiRequests, dateRange?.from, dateRange?.to]);
+
+  const filteredAssistantAiResolved = useMemo(() => {
+    return filteredAssistantAi.filter((item) => String(item.status || '').toLowerCase() === 'yopildi').length;
+  }, [filteredAssistantAi]);
+
+  // ============================================================
+  // JAMI TREKLAR va HAL QILINGANLAR — 4 manba qo'shiladi
+  // Murojaatlar (summary) + 102 OTK + Toshkent ombori + Assistent AI
+  // ============================================================
   const augmentedSummary = useMemo(() => {
     if (!summary) return summary;
     const whTotal = filteredWarehouse.length;
+    const m102Total = filteredModule102Tracks.length;
+    const aiTotal = filteredAssistantAi.length;
+    const m102Resolved = filteredModule102Resolved;
+    const aiResolved = filteredAssistantAiResolved;
     return {
       ...summary,
-      today_total: (summary.today_total || 0) + whTotal,
-      today_resolved: (summary.today_resolved || 0) + whTotal,
+      today_total: (summary.today_total || 0) + whTotal + m102Total + aiTotal,
+      // Toshkent ombori vozvratlari — yopilgan deb hisoblanadi (yo'lda emas)
+      today_resolved: (summary.today_resolved || 0) + whTotal + m102Resolved + aiResolved,
     };
-  }, [summary, filteredWarehouse]);
+  }, [summary, filteredWarehouse, filteredModule102Tracks, filteredAssistantAi, filteredModule102Resolved, filteredAssistantAiResolved]);
 
   // ============================================================
   // Toshkent ombori statistikasi — bosh sahifa ichidagi mini-dashboard
@@ -730,6 +796,27 @@ export default function DashboardPage() {
     return subscribeToWarehouseReturns(sync);
   }, []);
 
+  // 102 — OTK alohida subscription (Murojaatlar bilan parallel kanal)
+  useEffect(() => {
+    if (typeof subscribeToModule102 !== 'function') return undefined;
+    const sync = () => {
+      try { setModule102Entries(getModule102Entries()); } catch { /* noop */ }
+    };
+    sync();
+    return subscribeToModule102(sync);
+  }, []);
+
+  // Assistant AI — subscribeToOtkData allaqachon assistant_ai_requests ham eshitadi,
+  // shuning uchun shu kanaldan o'qiymiz. Lekin event'larni hech bo'lmasa
+  // bir marta yangilashimiz kerak (boot vaqtida).
+  useEffect(() => {
+    const sync = () => {
+      try { setAssistantAiRequests(getAssistantAiRequests()); } catch { /* noop */ }
+    };
+    sync();
+    return subscribeToOtkData(sync, { debounceMs: 120 });
+  }, []);
+
   // ============================================================
   // Sana filtri o'zgarganda Supabase'dan o'sha oraliqni tortish
   // ------------------------------------------------------------
@@ -929,46 +1016,107 @@ export default function DashboardPage() {
   // ============================================================
   const augmentedTypeCounts = useMemo(() => {
     const base = Array.isArray(type_counts) ? type_counts.map((b) => ({ ...b })) : [];
-    if (filteredWarehouse.length === 0) return base;
-    const whByProblem = new Map();
-    filteredWarehouse.forEach((item) => {
-      const name = (item.problemType || '').trim() || "Vozvrat (Toshkent ombori)";
-      whByProblem.set(name, (whByProblem.get(name) || 0) + 1);
-    });
-    whByProblem.forEach((count, name) => {
-      const existing = base.find((b) => String(b.name).toLowerCase() === name.toLowerCase());
+    const addByProblem = (name, count) => {
+      const safe = String(name || '').trim() || "Ko'rsatilmagan";
+      const existing = base.find((b) => String(b.name).toLowerCase() === safe.toLowerCase());
       if (existing) existing.count = (existing.count || 0) + count;
-      else base.push({ name, count });
-    });
+      else base.push({ name: safe, count });
+    };
+
+    // Toshkent ombori
+    if (filteredWarehouse.length > 0) {
+      const map = new Map();
+      filteredWarehouse.forEach((item) => {
+        const name = (item.problemType || '').trim() || "Vozvrat (Toshkent ombori)";
+        map.set(name, (map.get(name) || 0) + 1);
+      });
+      map.forEach((count, name) => addByProblem(name, count));
+    }
+
+    // 102 — OTK — track-level reason104/problem
+    if (filteredModule102Tracks.length > 0) {
+      const map = new Map();
+      filteredModule102Tracks.forEach((t) => {
+        const name = (t.reason104 || t.problemType || '').trim() || "102 — Boshqa";
+        map.set(name, (map.get(name) || 0) + 1);
+      });
+      map.forEach((count, name) => addByProblem(name, count));
+    }
+
+    // Assistent AI
+    if (filteredAssistantAi.length > 0) {
+      const map = new Map();
+      filteredAssistantAi.forEach((item) => {
+        const name = (item.problemType || '').trim() || 'Assistent AI murojaati';
+        map.set(name, (map.get(name) || 0) + 1);
+      });
+      map.forEach((count, name) => addByProblem(name, count));
+    }
+
     return base.sort((a, b) => (b.count || 0) - (a.count || 0));
-  }, [type_counts, filteredWarehouse]);
+  }, [type_counts, filteredWarehouse, filteredModule102Tracks, filteredAssistantAi]);
 
   const augmentedSourceChartData = useMemo(() => {
     const base = Array.isArray(sourceChartData) ? sourceChartData.map((b) => ({ ...b })) : [];
-    const whTotal = filteredWarehouse.length;
-    if (whTotal === 0) return base;
-    const sourceName = 'Toshkent ombori';
-    const existing = base.find((b) => String(b.name).toLowerCase() === sourceName.toLowerCase());
-    if (existing) existing.count = (existing.count || 0) + whTotal;
-    else base.push({ name: sourceName, count: whTotal });
+    const addSource = (name, count) => {
+      if (count <= 0) return;
+      const safe = String(name || '').trim() || "Ko'rsatilmagan";
+      const existing = base.find((b) => String(b.name).toLowerCase() === safe.toLowerCase());
+      if (existing) existing.count = (existing.count || 0) + count;
+      else base.push({ name: safe, count });
+    };
+
+    addSource('Toshkent ombori', filteredWarehouse.length);
+    addSource('102 — OTK', filteredModule102Tracks.length);
+
+    // Assistant AI manbalarini per-source ajratamiz (telegram_bot, web)
+    if (filteredAssistantAi.length > 0) {
+      const map = new Map();
+      filteredAssistantAi.forEach((item) => {
+        const s = String(item.source || 'telegram_bot').toLowerCase();
+        let label = 'Assistent AI';
+        if (s.includes('telegram')) label = 'Assistent AI (Telegram)';
+        else if (s.includes('web')) label = 'Assistent AI (Web)';
+        map.set(label, (map.get(label) || 0) + 1);
+      });
+      map.forEach((count, name) => addSource(name, count));
+    }
+
     return base.sort((a, b) => (b.count || 0) - (a.count || 0));
-  }, [sourceChartData, filteredWarehouse]);
+  }, [sourceChartData, filteredWarehouse, filteredModule102Tracks, filteredAssistantAi]);
 
   const augmentedTrendData = useMemo(() => {
     if (!Array.isArray(trendData) || trendData.length === 0) return trendData;
     const year = monthly_report.year || new Date().getFullYear();
-    const byMonth = new Array(12).fill(0);
+
+    const whByMonth = new Array(12).fill(0);
     (warehouseReturns || []).forEach((item) => {
       const d = new Date(item.returnDate || item.createdAt || 0);
       if (d.getFullYear() !== year) return;
-      byMonth[d.getMonth()] += 1;
+      whByMonth[d.getMonth()] += 1;
     });
+
+    const m102ByMonth = new Array(12).fill(0);
+    (module102Entries || []).forEach((entry) => {
+      const d = new Date(entry.createdAt || 0);
+      if (d.getFullYear() !== year) return;
+      const tracks = Array.isArray(entry.tracks) ? entry.tracks.length : 1;
+      m102ByMonth[d.getMonth()] += tracks || 1;
+    });
+
+    const aiByMonth = new Array(12).fill(0);
+    (assistantAiRequests || []).forEach((item) => {
+      const d = new Date(item.createdAt || item.updatedAt || 0);
+      if (d.getFullYear() !== year) return;
+      aiByMonth[d.getMonth()] += 1;
+    });
+
     return trendData.map((row, idx) => ({
       ...row,
-      Jami: (row.Jami || 0) + (byMonth[idx] || 0),
+      Jami: (row.Jami || 0) + (whByMonth[idx] || 0) + (m102ByMonth[idx] || 0) + (aiByMonth[idx] || 0),
     }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trendData, warehouseReturns, monthly_report.year]);
+  }, [trendData, warehouseReturns, module102Entries, assistantAiRequests, monthly_report.year]);
   const latestMonthTotal = monthly_report.latestMonth != null
     ? Number(monthly_report.totals?.find((month) => month.monthIndex === monthly_report.latestMonth)?.count || 0)
     : 0;

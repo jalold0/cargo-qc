@@ -146,6 +146,8 @@ function isAdditionalDepartmentWorkEntry(entry) {
   return additionalPatterns.some((pattern) => haystack.includes(pattern));
 }
 
+// Ish kunlari: faqat Yakshanba (kuni=0) dam, qolgan 6 kun ish.
+// Uzbekistondagi standart ish rejimi — 6 kunlik (Du-Sha).
 function countWorkdays(year, month, referenceDate) {
   const cursor = new Date(year, month, 1);
   const isCurrentPeriod = year === referenceDate.getFullYear() && month === referenceDate.getMonth();
@@ -156,7 +158,8 @@ function countWorkdays(year, month, referenceDate) {
 
   while (cursor <= end) {
     const day = cursor.getDay();
-    if (day !== 0 && day !== 6) {
+    // Faqat Yakshanba (0) dam. Shanba (6) ham ish kuni.
+    if (day !== 0) {
       total += 1;
     }
     cursor.setDate(cursor.getDate() + 1);
@@ -267,12 +270,70 @@ function forecastNextMonth(records, year, month, minutesLookup = new Map()) {
   };
 }
 
-export function buildDepartmentStatsAligned(recordsSource = [], usersSource = [], problemTypes = [], selectedMonth, selectedYear) {
+/**
+ * Department analytics — Rahbar ko'rinishi va prognozlar uchun.
+ *
+ * @param {Array}  recordsSource — Murojaatlar yozuvlari
+ * @param {Array}  usersSource — Hodimlar ro'yxati
+ * @param {Array}  problemTypes — muammo turlari (vaqt me'yorlari uchun)
+ * @param {number} selectedMonth — 0..11
+ * @param {number} selectedYear — masalan 2026
+ * @param {Object} extraSources — qo'shimcha manbalardan ham trek oqimini hisobga olish uchun:
+ *                  { warehouse?: Array<{returnDate|createdAt}>, module102?: Array<{createdAt, tracks?: Array}>,
+ *                    assistantAi?: Array<{createdAt|updatedAt}> }
+ *                  Bu funksiyalar har bir manbadan virtual yozuvlar yaratadi (faqat `date` va `isExtra` flag bilan)
+ *                  va `records` ga qo'shadi — natija prognoz formulasiga ham ta'sir qiladi.
+ */
+export function buildDepartmentStatsAligned(
+  recordsSource = [],
+  usersSource = [],
+  problemTypes = [],
+  selectedMonth,
+  selectedYear,
+  extraSources = {}
+) {
   const now = new Date();
   const targetMonth = Number.isInteger(selectedMonth) ? selectedMonth : now.getMonth();
   const targetYear = Number.isInteger(selectedYear) ? selectedYear : now.getFullYear();
   const targetMonthPrefix = `${targetYear}-${String(targetMonth + 1).padStart(2, '0')}`;
-  const records = Array.isArray(recordsSource) ? recordsSource : [];
+  const baseRecords = Array.isArray(recordsSource) ? recordsSource : [];
+
+  // Qo'shimcha manbalardan virtual yozuvlar yasaymiz — har biri `date` va
+  // `isExtra` markeriga ega. `isAdditionalDepartmentWorkEntry()` Toshkent
+  // ombori yozuvlarini "qo'shimcha ish" deb belgilashi uchun maxsus
+  // marker maydonlardan foydalanamiz.
+  const extraRecords = [];
+  const fmt = (d) => {
+    const date = new Date(d);
+    if (Number.isNaN(date.getTime())) return null;
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  };
+
+  // Warehouse — har bir vozvrat = 1 trek, isExtra=true (yordamchi ish)
+  (extraSources.warehouse || []).forEach((item) => {
+    const dateKey = fmt(item?.returnDate || item?.createdAt);
+    if (!dateKey) return;
+    extraRecords.push({ date: dateKey, problemType: item?.problemType || 'Vozvrat', __isExtraWork: true });
+  });
+
+  // Module 102 — har entry ichidagi tracks soni (entry yo'qsa 1)
+  (extraSources.module102 || []).forEach((entry) => {
+    const dateKey = fmt(entry?.createdAt);
+    if (!dateKey) return;
+    const tracks = Array.isArray(entry?.tracks) && entry.tracks.length > 0 ? entry.tracks : [{}];
+    tracks.forEach((t) => {
+      extraRecords.push({ date: dateKey, problemType: t?.reason104 || t?.problemType || '102 — Murojaat' });
+    });
+  });
+
+  // Assistent AI — har request = 1 trek
+  (extraSources.assistantAi || []).forEach((item) => {
+    const dateKey = fmt(item?.createdAt || item?.updatedAt);
+    if (!dateKey) return;
+    extraRecords.push({ date: dateKey, problemType: item?.problemType || 'Assistent AI' });
+  });
+
+  const records = baseRecords.concat(extraRecords);
   const users = Array.isArray(usersSource) ? usersSource.filter((item) => item?.active !== false) : [];
   const minutesLookup = buildProblemMinutesLookup(problemTypes);
   const leaders = users.filter((item) => {
