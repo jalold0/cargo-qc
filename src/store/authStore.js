@@ -65,6 +65,30 @@ export const useAuthStore = create(
         const normalizedUsername = username?.trim().toLowerCase();
         const normalizedPassword = password?.trim();
 
+        // Fuzzy variantlarni yasash:
+        // "muqimjonov.ulugbek" → ["muqimjonov.ulugbek", "ulugbek.muqimjonov"]
+        // Foydalanuvchilar familiya.ism yoki ism.familiya tartibida yozishi mumkin.
+        const buildUsernameVariants = (name) => {
+          const variants = new Set([name]);
+          // Nuqta yoki probel bilan ajratilgan qismlarni qaytaramiz
+          ['.', '_', '-', ' '].forEach((sep) => {
+            const parts = name.split(sep).map((p) => p.trim()).filter(Boolean);
+            if (parts.length >= 2) {
+              variants.add(parts.slice().reverse().join(sep));
+              variants.add(parts.slice().reverse().join('.'));
+              variants.add(parts.join('.'));
+            }
+          });
+          return Array.from(variants);
+        };
+
+        // Bir necha username qiymati bilan parts sorted-key ham mos kelishi
+        // mumkin: "muqimjonov.ulugbek" va "ulugbek.muqimjonov" bir xil key.
+        const sortedKey = (name) =>
+          name.split(/[._\- ]+/).map((p) => p.trim()).filter(Boolean).sort().join('|');
+        const usernameVariants = buildUsernameVariants(normalizedUsername);
+        const typedSortedKey = sortedKey(normalizedUsername);
+
         // ============================================================
         // QATLAM 1 — Supabase (agar ulangan bo'lsa)
         // ------------------------------------------------------------
@@ -74,30 +98,40 @@ export const useAuthStore = create(
         // ============================================================
         let localUser = null;
         if (isUsersRemoteEnabled) {
-          try {
-            const remoteUser = await Promise.race([
-              findUserByUsernameRemote(normalizedUsername),
-              new Promise((resolve) => setTimeout(() => resolve(null), 3000)),
-            ]);
-            if (remoteUser && remoteUser.active !== false) {
-              const ok = await verifyPassword(normalizedPassword, remoteUser.password);
-              if (ok) {
-                localUser = remoteUser;
+          // Avval aniq match, keyin teskari variantlar
+          for (const variant of usernameVariants) {
+            try {
+              // eslint-disable-next-line no-await-in-loop
+              const remoteUser = await Promise.race([
+                findUserByUsernameRemote(variant),
+                new Promise((resolve) => setTimeout(() => resolve(null), 3000)),
+              ]);
+              if (remoteUser && remoteUser.active !== false) {
+                // eslint-disable-next-line no-await-in-loop
+                const ok = await verifyPassword(normalizedPassword, remoteUser.password);
+                if (ok) {
+                  localUser = remoteUser;
+                  break;
+                }
               }
+            } catch {
+              // Network xato — keyingisini sinab ko'ramiz
             }
-          } catch {
-            // Network xato — fallback'ga tushamiz
           }
         }
 
         // ============================================================
         // QATLAM 2 — localStorage system users (yoki Supabase fallback)
+        // Sorted-key fuzzy: "muqimjonov.ulugbek" ↔ "ulugbek.muqimjonov"
         // ============================================================
         const users = getSystemUsers();
         if (!localUser) {
           for (const item of users) {
             if (item.active === false) continue;
-            if (item.username.trim().toLowerCase() !== normalizedUsername) continue;
+            const itemName = item.username.trim().toLowerCase();
+            const exact = itemName === normalizedUsername;
+            const fuzzy = !exact && sortedKey(itemName) === typedSortedKey;
+            if (!exact && !fuzzy) continue;
             // eslint-disable-next-line no-await-in-loop
             const ok = await verifyPassword(normalizedPassword, item.password);
             if (ok) { localUser = item; break; }
