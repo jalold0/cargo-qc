@@ -105,6 +105,14 @@ export function subscribeToUsers(callback) {
   return subscribeToTable('users', callback);
 }
 
+export function subscribeToModule102Realtime(callback) {
+  return subscribeToTable('module_102_entries', callback);
+}
+
+export function subscribeToWarehouseRealtime(callback) {
+  return subscribeToTable('warehouse_returns', callback);
+}
+
 // =============================================================================
 // Connection health probe
 // =============================================================================

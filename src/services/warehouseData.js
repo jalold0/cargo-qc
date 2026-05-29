@@ -196,6 +196,24 @@ function mergeEntries(localItems = [], remoteItems = []) {
   );
 }
 
+// ============================================================
+// Realtime → service ko'prik
+// ------------------------------------------------------------
+// DashboardLayout'da Supabase Realtime warehouse_returns jadvalini
+// kuzatadi. Boshqa qurilmadan o'zgarish kelsa, `cargo-qc-data-changed`
+// event'i yuboriladi. Biz uni eshitib, joriy oyni qayta tortib olamiz
+// — boshqa qurilmadagi import/o'chirish darrov bu sahifada ko'rinadi.
+// ============================================================
+if (typeof window !== 'undefined') {
+  window.addEventListener('cargo-qc-data-changed', (event) => {
+    const key = event?.detail?.key;
+    if (key === 'remote:warehouse') {
+      hydrationStarted = false; // qayta hydrate qilishga ruxsat
+      hydrateFromRemoteInBackground();
+    }
+  });
+}
+
 function hydrateFromRemoteInBackground() {
   if (typeof window === 'undefined' || hydrationStarted) return;
   if (!isSupabaseEnabled) return;

@@ -125,6 +125,17 @@ function mergeModule102Entries(localItems = [], remoteItems = []) {
   );
 }
 
+// Realtime → service ko'prik (boshqa qurilmadan kelgan o'zgarish)
+if (typeof window !== 'undefined') {
+  window.addEventListener('cargo-qc-data-changed', (event) => {
+    const key = event?.detail?.key;
+    if (key === 'remote:module_102') {
+      module102RemoteHydrationStarted = false;
+      hydrateModule102FromRemoteInBackground();
+    }
+  });
+}
+
 export function hydrateModule102FromRemoteInBackground() {
   if (typeof window === 'undefined' || module102RemoteHydrationStarted) return;
   if (!isSupabaseEnabled) return;
