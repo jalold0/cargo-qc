@@ -726,10 +726,24 @@ function scheduleUsersRemoteSync(usersList) {
     usersRemoteSyncTimer = null;
     try {
       if (!isUsersRemoteEnabled) return;
-      await bulkUpsertUsersRemote(usersList);
+      const result = await bulkUpsertUsersRemote(usersList);
+      // Muvaffaqiyatsiz bo'lsa, console'da batafsil + toast ham
+      if (result?.failed > 0 || result?.reason) {
+        const msg = `Foydalanuvchilar Supabase'ga sync qilinmadi (${result.failed}/${usersList.length}). Sabab: ${result.reason || 'noma\'lum'}. Konsolda batafsil.`;
+        console.warn('[users sync]', msg, result);
+        // Toast — agar react-hot-toast yuklangan bo'lsa
+        try {
+          const toastMod = await import('react-hot-toast');
+          toastMod.default.error(msg, { duration: 6000 });
+        } catch {
+          // toast import xato bo'lsa, faqat console
+        }
+        markRemoteSyncPending('users');
+        return;
+      }
       clearRemoteSyncPending('users');
-    } catch {
-      // local fallback active
+    } catch (error) {
+      console.warn('[users sync] kutilmagan xato:', error?.message || error);
       markRemoteSyncPending('users');
     }
   }, 200);

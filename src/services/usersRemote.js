@@ -28,10 +28,10 @@ function buildHeaders(extra = {}) {
   };
 }
 
-async function safeRequest(path, init = {}, timeoutMs = 5000) {
+async function safeRequest(path, init = {}, timeoutMs = 15000) {
   if (!isUsersRemoteEnabled) return null;
 
-  // AbortController — timeout chiqsa request bekor qilinadi
+  // AbortController — timeout chiqsa request bekor qilinadi (15s)
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -43,14 +43,28 @@ async function safeRequest(path, init = {}, timeoutMs = 5000) {
     });
 
     if (!response.ok) {
-      // Logger'siz, sokin xatolik — fallback ishlasin
+      // Xato matnini console'da ko'rsatamiz — diagnostika oson bo'lsin.
+      // Avval silently fail edi, debug qilish imkonsiz edi.
+      let body = '';
+      try {
+        body = await response.text();
+      } catch {
+        // ignore
+      }
+      console.warn(
+        `[usersRemote] ${init.method || 'GET'} ${path} → ${response.status} ${response.statusText}`,
+        body.slice(0, 500),
+      );
       return null;
     }
 
     if (response.status === 204) return null;
     return await response.json();
-  } catch {
-    // Network/CORS/timeout/abort — silent fallback
+  } catch (error) {
+    console.warn(
+      `[usersRemote] ${init.method || 'GET'} ${path} — network/timeout xato:`,
+      error?.message || error,
+    );
     return null;
   } finally {
     clearTimeout(timer);
@@ -153,7 +167,9 @@ export async function upsertUserRemote(user) {
 }
 
 export async function bulkUpsertUsersRemote(users = []) {
-  if (!isUsersRemoteEnabled) return { inserted: 0, updated: 0, failed: 0 };
+  if (!isUsersRemoteEnabled) {
+    return { inserted: 0, updated: 0, failed: 0, reason: 'remote-disabled' };
+  }
   if (!Array.isArray(users) || users.length === 0) {
     return { inserted: 0, updated: 0, failed: 0 };
   }
@@ -170,7 +186,14 @@ export async function bulkUpsertUsersRemote(users = []) {
   if (Array.isArray(rows)) {
     return { inserted: 0, updated: rows.length, failed: 0, items: rows.map(fromRemoteUser) };
   }
-  return { inserted: 0, updated: 0, failed: payload.length };
+  // safeRequest null qaytarsa, xato console'da log qilingan.
+  // Bu yerda explicit diagnostika qo'shamiz — caller bilsin.
+  return {
+    inserted: 0,
+    updated: 0,
+    failed: payload.length,
+    reason: 'network-or-server-error',
+  };
 }
 
 export async function deleteUserRemote(id) {
