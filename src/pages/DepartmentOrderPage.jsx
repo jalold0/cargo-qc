@@ -3,7 +3,9 @@ import { clsx } from 'clsx';
 import { createPortal } from 'react-dom';
 import toast from 'react-hot-toast';
 import { Activity, BriefcaseBusiness, CheckCircle2, ClipboardList, Clock3, Download, FileText, Maximize2, PackageSearch, ShieldCheck, TrendingUp, Users2, Workflow, X } from 'lucide-react';
-import { DEFAULT_DEPARTMENT_ORDER_CONTENT, getAllOtkRecords, getCompensatedLoadRegistry, getOtkSettings, getRecoveredCompensatedLoads, getSystemUsers, subscribeToOtkData, toDateKey } from '../services/localData';
+import { DEFAULT_DEPARTMENT_ORDER_CONTENT, getAllOtkRecords, getAssistantAiRequests, getCompensatedLoadRegistry, getOtkSettings, getRecoveredCompensatedLoads, getSystemUsers, subscribeToOtkData, toDateKey } from '../services/localData';
+import { getWarehouseReturns, subscribeToWarehouseReturns } from '../services/warehouseData';
+import { getModule102Entries, subscribeToModule102 } from '../services/module102Data';
 import { isAdminRole, isManagerRole } from '../services/access';
 import {
   buildDepartmentStatsAligned as buildSyncedDepartmentStats,
@@ -21,6 +23,15 @@ export default function DepartmentOrderPage() {
   const [users, setUsers] = useState(() => getSystemUsers());
   const [compensatedRegistry, setCompensatedRegistry] = useState(() => getCompensatedLoadRegistry());
   const [recoveredCompensated, setRecoveredCompensated] = useState(() => getRecoveredCompensatedLoads());
+  const [warehouseReturns, setWarehouseReturns] = useState(() => {
+    try { return getWarehouseReturns(); } catch { return []; }
+  });
+  const [module102Entries, setModule102Entries] = useState(() => {
+    try { return getModule102Entries(); } catch { return []; }
+  });
+  const [assistantAiRequests, setAssistantAiRequests] = useState(() => {
+    try { return getAssistantAiRequests(); } catch { return []; }
+  });
   const currentYear = new Date().getFullYear();
   const [selectedMonth, setSelectedMonth] = useState(() => new Date().getMonth());
   const [selectedYear, setSelectedYear] = useState(currentYear);
@@ -34,9 +45,30 @@ export default function DepartmentOrderPage() {
       setUsers(getSystemUsers());
       setCompensatedRegistry(getCompensatedLoadRegistry());
       setRecoveredCompensated(getRecoveredCompensatedLoads());
+      try { setAssistantAiRequests(getAssistantAiRequests()); } catch { /* noop */ }
     };
 
     return subscribeToOtkData(sync, { debounceMs: 80 });
+  }, []);
+
+  // Toshkent ombori — alohida subscription
+  useEffect(() => {
+    if (typeof subscribeToWarehouseReturns !== 'function') return undefined;
+    const sync = () => {
+      try { setWarehouseReturns(getWarehouseReturns()); } catch { /* noop */ }
+    };
+    sync();
+    return subscribeToWarehouseReturns(sync);
+  }, []);
+
+  // 102 — OTK alohida subscription
+  useEffect(() => {
+    if (typeof subscribeToModule102 !== 'function') return undefined;
+    const sync = () => {
+      try { setModule102Entries(getModule102Entries()); } catch { /* noop */ }
+    };
+    sync();
+    return subscribeToModule102(sync);
   }, []);
 
   const content = useMemo(
@@ -52,8 +84,19 @@ export default function DepartmentOrderPage() {
     [currentYear]
   );
   const departmentStats = useMemo(
-    () => buildSyncedDepartmentStats(records, users, settings.problemTypes || [], selectedMonth, selectedYear),
-    [records, users, settings.problemTypes, selectedMonth, selectedYear]
+    () => buildSyncedDepartmentStats(
+      records,
+      users,
+      settings.problemTypes || [],
+      selectedMonth,
+      selectedYear,
+      {
+        warehouse: warehouseReturns,
+        module102: module102Entries,
+        assistantAi: assistantAiRequests,
+      }
+    ),
+    [records, users, settings.problemTypes, selectedMonth, selectedYear, warehouseReturns, module102Entries, assistantAiRequests]
   );
   const projectPassport = useMemo(
     () => buildSyncedProjectPassportOverview({
@@ -62,8 +105,13 @@ export default function DepartmentOrderPage() {
       settings,
       compensatedRegistry,
       recoveredCompensated,
+      extraSources: {
+        warehouse: warehouseReturns,
+        module102: module102Entries,
+        assistantAi: assistantAiRequests,
+      },
     }),
-    [records, users, settings, compensatedRegistry, recoveredCompensated]
+    [records, users, settings, compensatedRegistry, recoveredCompensated, warehouseReturns, module102Entries, assistantAiRequests]
   );
   const exportLabels = useMemo(
     () => ({

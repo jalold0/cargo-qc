@@ -396,15 +396,48 @@ export function buildProjectPassportOverview({
   settings = {},
   compensatedRegistry = [],
   recoveredCompensated = [],
+  extraSources = {},
 } = {}) {
   const records = Array.isArray(recordsSource) ? recordsSource : [];
   const users = Array.isArray(usersSource) ? usersSource.filter((item) => item?.active !== false) : [];
   const safeSettings = settings && typeof settings === 'object' ? settings : {};
 
+  // Murojaatlar (asosiy)
+  let totalRecords = records.length;
+  let inProgress = records.filter((item) => item?.status !== 'Yopildi').length;
+  let closed = records.filter((item) => item?.status === 'Yopildi').length;
+
+  // Toshkent ombori — vozvrat treklarini "closed" deb hisoblaymiz
+  // (omborga keldi = oqim yopildi)
+  const warehouseList = Array.isArray(extraSources.warehouse) ? extraSources.warehouse : [];
+  totalRecords += warehouseList.length;
+  closed += warehouseList.length;
+
+  // 102 — OTK — entrylar va ulardagi tracklar
+  const module102List = Array.isArray(extraSources.module102) ? extraSources.module102 : [];
+  module102List.forEach((entry) => {
+    const tracks = Array.isArray(entry?.tracks) && entry.tracks.length > 0 ? entry.tracks : [{ status: entry?.status }];
+    tracks.forEach((t) => {
+      totalRecords += 1;
+      const trackStatus = String(t?.status || entry?.status || '').toLowerCase();
+      if (trackStatus === 'yopildi') closed += 1;
+      else inProgress += 1;
+    });
+  });
+
+  // Assistent AI
+  const assistantAiList = Array.isArray(extraSources.assistantAi) ? extraSources.assistantAi : [];
+  assistantAiList.forEach((item) => {
+    totalRecords += 1;
+    const aiStatus = String(item?.status || '').toLowerCase();
+    if (aiStatus === 'yopildi') closed += 1;
+    else inProgress += 1;
+  });
+
   return {
-    totalRecords: records.length,
-    inProgress: records.filter((item) => item?.status !== 'Yopildi').length,
-    closed: records.filter((item) => item?.status === 'Yopildi').length,
+    totalRecords,
+    inProgress,
+    closed,
     activeUsers: users.length,
     problemTypes: Array.isArray(safeSettings.problemTypes) ? safeSettings.problemTypes.length : 0,
     departments: Array.isArray(safeSettings.departments) ? safeSettings.departments.length : 0,
