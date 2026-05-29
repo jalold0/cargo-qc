@@ -174,7 +174,19 @@ export async function bulkUpsertUsersRemote(users = []) {
     return { inserted: 0, updated: 0, failed: 0 };
   }
 
-  const payload = users.map(toRemoteUser);
+  // KRITIK: PostgREST `on_conflict=username` batch ichida bir xil
+  // username ikki marta uchrasa 400 qaytaradi:
+  // "21000: ON CONFLICT DO UPDATE command cannot affect row a second time"
+  // Username bo'yicha dedupe — oxirgisi g'olib (eng yangi tahrir).
+  const seen = new Map();
+  users.forEach((u) => {
+    const key = String(u?.username || '').trim().toLowerCase();
+    if (!key) return; // bo'sh usernameni ham o'tkazib yuboramiz
+    seen.set(key, u);
+  });
+  const deduped = Array.from(seen.values());
+
+  const payload = deduped.map(toRemoteUser);
   const rows = await safeRequest('users?on_conflict=username', {
     method: 'POST',
     headers: {
