@@ -448,10 +448,37 @@ export default function DashboardPage() {
     monthly_report = {},
   } = stats;
   const employeeStats = useMemo(() => buildEmployeeStats(employeeDateRange, allRecords, systemUsers), [employeeDateRange, allRecords, systemUsers]);
-  const departmentStats = useMemo(
+  const departmentStatsRaw = useMemo(
     () => buildUnifiedDepartmentStats(allRecords, systemUsers, settings.problemTypes || [], departmentSelectedMonth, departmentSelectedYear),
     [allRecords, systemUsers, settings.problemTypes, departmentSelectedMonth, departmentSelectedYear]
   );
+
+  // Rahbar ko'rinishidagi "Joriy oy trek oqimi" va kunlik oqim
+  // hisoblariga Toshkent ombori yozuvlarini ham qo'shamiz.
+  const departmentStats = useMemo(() => {
+    if (!departmentStatsRaw) return departmentStatsRaw;
+    const year = Number(departmentSelectedYear);
+    const month = Number(departmentSelectedMonth);
+    const whCount = (warehouseReturns || []).filter((item) => {
+      const d = new Date(item.returnDate || item.createdAt || 0);
+      return d.getFullYear() === year && d.getMonth() === month;
+    }).length;
+    if (whCount === 0) return departmentStatsRaw;
+    const monthlyTracks = (departmentStatsRaw.monthlyTracks || 0) + whCount;
+    // Asosiy oqim sifatida emas, "qo'shimcha ish" sifatida qo'shamiz —
+    // chunki Toshkent ombori vozvratlari odatda yordamchi ish
+    const extraTracks = (departmentStatsRaw.extraTrackCount || 0) + whCount;
+    const total = (departmentStatsRaw.coreTrackCount || 0) + extraTracks;
+    const coreShare = total ? Math.round(((departmentStatsRaw.coreTrackCount || 0) / total) * 100) : 0;
+    const extraShare = total ? 100 - coreShare : 0;
+    return {
+      ...departmentStatsRaw,
+      monthlyTracks,
+      extraTrackCount: extraTracks,
+      coreShare,
+      extraShare,
+    };
+  }, [departmentStatsRaw, warehouseReturns, departmentSelectedMonth, departmentSelectedYear]);
 
   // ============================================================
   // JAMI TREKLAR va HAL QILINGANLAR — Toshkent ombori ham qo'shiladi
@@ -463,29 +490,27 @@ export default function DashboardPage() {
   // (warehouseStats memo'si pastda — bu yerda foydalanish uchun
   // forward reference qilamiz; useMemo dependency sifatida pastdagi memo'ga
   // qaramaymiz, balki to'g'ridan-to'g'ri warehouseReturns'ni o'qiymiz)
-  const augmentedSummary = useMemo(() => {
-    if (!summary) return summary;
-
-    // Sana filtriga moslab warehouse'larni hisoblash
+  // Sana filtriga moslab warehouse yozuvlari
+  const filteredWarehouse = useMemo(() => {
     const fromTime = dateRange?.from ? new Date(dateRange.from).getTime() : null;
     const toTime = dateRange?.to ? new Date(dateRange.to).getTime() + 86_399_000 : null;
-    const filteredWh = (warehouseReturns || []).filter((item) => {
+    return (warehouseReturns || []).filter((item) => {
       const t = new Date(item.returnDate || item.createdAt || 0).getTime();
       if (fromTime && t < fromTime) return false;
       if (toTime && t > toTime) return false;
       return true;
     });
+  }, [warehouseReturns, dateRange?.from, dateRange?.to]);
 
-    // Warehouse barcha yozuvlari — "vozvrat" deb qabul qilingan,
-    // ya'ni "hal qilingan" deb hisoblanadi (omborda saqlangan).
-    const whTotal = filteredWh.length;
-
+  const augmentedSummary = useMemo(() => {
+    if (!summary) return summary;
+    const whTotal = filteredWarehouse.length;
     return {
       ...summary,
       today_total: (summary.today_total || 0) + whTotal,
       today_resolved: (summary.today_resolved || 0) + whTotal,
     };
-  }, [summary, warehouseReturns, dateRange?.from, dateRange?.to]);
+  }, [summary, filteredWarehouse]);
 
   // ============================================================
   // Toshkent ombori statistikasi — bosh sahifa ichidagi mini-dashboard
@@ -902,6 +927,55 @@ export default function DashboardPage() {
     Jami: Number(monthly_report.totals?.[index]?.count || 0),
     Trend: Number(monthly_report.totals?.[index]?.trend?.percent ?? 0),
   }));
+
+  // ============================================================
+  // Toshkent ombori — boshqa chart'larga ham qo'shish:
+  // - Muammo turlari pie: warehouse problemType'lari
+  // - Manba pie: "Toshkent ombori" alohida segment
+  // - Oylik dinamika area: har oyga warehouse count qo'shiladi
+  // ============================================================
+  const augmentedTypeCounts = useMemo(() => {
+    const base = Array.isArray(type_counts) ? type_counts.map((b) => ({ ...b })) : [];
+    if (filteredWarehouse.length === 0) return base;
+    const whByProblem = new Map();
+    filteredWarehouse.forEach((item) => {
+      const name = (item.problemType || '').trim() || "Vozvrat (Toshkent ombori)";
+      whByProblem.set(name, (whByProblem.get(name) || 0) + 1);
+    });
+    whByProblem.forEach((count, name) => {
+      const existing = base.find((b) => String(b.name).toLowerCase() === name.toLowerCase());
+      if (existing) existing.count = (existing.count || 0) + count;
+      else base.push({ name, count });
+    });
+    return base.sort((a, b) => (b.count || 0) - (a.count || 0));
+  }, [type_counts, filteredWarehouse]);
+
+  const augmentedSourceChartData = useMemo(() => {
+    const base = Array.isArray(sourceChartData) ? sourceChartData.map((b) => ({ ...b })) : [];
+    const whTotal = filteredWarehouse.length;
+    if (whTotal === 0) return base;
+    const sourceName = 'Toshkent ombori';
+    const existing = base.find((b) => String(b.name).toLowerCase() === sourceName.toLowerCase());
+    if (existing) existing.count = (existing.count || 0) + whTotal;
+    else base.push({ name: sourceName, count: whTotal });
+    return base.sort((a, b) => (b.count || 0) - (a.count || 0));
+  }, [sourceChartData, filteredWarehouse]);
+
+  const augmentedTrendData = useMemo(() => {
+    if (!Array.isArray(trendData) || trendData.length === 0) return trendData;
+    const year = monthly_report.year || new Date().getFullYear();
+    const byMonth = new Array(12).fill(0);
+    (warehouseReturns || []).forEach((item) => {
+      const d = new Date(item.returnDate || item.createdAt || 0);
+      if (d.getFullYear() !== year) return;
+      byMonth[d.getMonth()] += 1;
+    });
+    return trendData.map((row, idx) => ({
+      ...row,
+      Jami: (row.Jami || 0) + (byMonth[idx] || 0),
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trendData, warehouseReturns, monthly_report.year]);
   const latestMonthTotal = monthly_report.latestMonth != null
     ? Number(monthly_report.totals?.find((month) => month.monthIndex === monthly_report.latestMonth)?.count || 0)
     : 0;
@@ -1081,7 +1155,7 @@ export default function DashboardPage() {
           )}
         >
           <ResponsiveContainer width="100%" height={200}>
-            <AreaChart data={trendData} margin={{ top: 10, right: 12, left: -18, bottom: 0 }}>
+            <AreaChart data={augmentedTrendData} margin={{ top: 10, right: 12, left: -18, bottom: 0 }}>
               <defs>
                 <linearGradient id="total-compact" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%" stopColor="#2563eb" stopOpacity={0.24} />
@@ -1137,8 +1211,8 @@ export default function DashboardPage() {
         >
           <ResponsiveContainer width="100%" height={170}>
             <PieChart>
-              <Pie data={dashboardBreakdownView === 'problems' ? type_counts || [] : sourceChartData || []} dataKey="count" nameKey="name" innerRadius={52} outerRadius={84} paddingAngle={3}>
-                {(dashboardBreakdownView === 'problems' ? type_counts || [] : sourceChartData || []).map((_, i) => (
+              <Pie data={dashboardBreakdownView === 'problems' ? augmentedTypeCounts : augmentedSourceChartData} dataKey="count" nameKey="name" innerRadius={52} outerRadius={84} paddingAngle={3}>
+                {(dashboardBreakdownView === 'problems' ? augmentedTypeCounts : augmentedSourceChartData).map((_, i) => (
                   <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
                 ))}
               </Pie>
@@ -1146,7 +1220,7 @@ export default function DashboardPage() {
             </PieChart>
           </ResponsiveContainer>
           <div className="space-y-2">
-            {(dashboardBreakdownView === 'problems' ? type_counts || [] : sourceChartData || []).map((item, i) => (
+            {(dashboardBreakdownView === 'problems' ? augmentedTypeCounts : augmentedSourceChartData).map((item, i) => (
               <div key={item.name} className="flex items-center justify-between text-sm">
                 <div className="flex min-w-0 items-center gap-2">
                   <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
@@ -1658,7 +1732,7 @@ export default function DashboardPage() {
       <section className="grid gap-4 xl:grid-cols-3">
         <Panel className="xl:col-span-2" title={t('weeklyTrend')} subtitle={t('weeklyTrendSubtitle')}>
           <ResponsiveContainer width="100%" height={280}>
-            <AreaChart data={trendData} margin={{ top: 10, right: 16, left: -16, bottom: 0 }}>
+            <AreaChart data={augmentedTrendData} margin={{ top: 10, right: 16, left: -16, bottom: 0 }}>
               <defs>
                 <linearGradient id="total" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%" stopColor="#2563eb" stopOpacity={0.28} />
@@ -1687,7 +1761,7 @@ export default function DashboardPage() {
         >
           <ResponsiveContainer width="100%" height={190}>
             <PieChart>
-              <Pie data={type_counts || []} dataKey="count" nameKey="name" innerRadius={50} outerRadius={76} paddingAngle={3}>
+              <Pie data={augmentedTypeCounts} dataKey="count" nameKey="name" innerRadius={50} outerRadius={76} paddingAngle={3}>
                 {(type_counts || []).map((_, i) => (
                   <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
                 ))}
@@ -1857,7 +1931,7 @@ export default function DashboardPage() {
                   {sourceChartData.length ? (
                     <ResponsiveContainer width="100%" height={280}>
                       <PieChart>
-                        <Pie data={sourceChartData} dataKey="count" nameKey="name" innerRadius={62} outerRadius={94} paddingAngle={3}>
+                        <Pie data={augmentedSourceChartData} dataKey="count" nameKey="name" innerRadius={62} outerRadius={94} paddingAngle={3}>
                           {sourceChartData.map((_, i) => (
                             <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
                           ))}
