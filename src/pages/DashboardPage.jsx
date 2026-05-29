@@ -524,15 +524,8 @@ export default function DashboardPage() {
       (compensatedRegistry || []).map((item) => String(item.trackCode || '').trim()).filter(Boolean),
     );
 
-    // Sana filtriga moslab kesamiz
-    const fromTime = dateRange?.from ? new Date(dateRange.from).getTime() : null;
-    const toTime = dateRange?.to ? new Date(dateRange.to).getTime() + 86_399_000 : null;
-    const filtered = (warehouseReturns || []).filter((item) => {
-      const t = new Date(item.returnDate || item.createdAt || 0).getTime();
-      if (fromTime && t < fromTime) return false;
-      if (toTime && t > toTime) return false;
-      return true;
-    });
+    // filteredWarehouse'ni qayta ishlatamiz — bitta filter o'rniga ikki.
+    const filtered = filteredWarehouse;
 
     const todayKey = new Date().toDateString();
     let todayCount = 0;
@@ -573,7 +566,7 @@ export default function DashboardPage() {
       topProblems,
       topResponsibles,
     };
-  }, [warehouseReturns, compensatedRegistry, dateRange?.from, dateRange?.to]);
+  }, [filteredWarehouse, compensatedRegistry]);
   const employeeTotals = useMemo(() => summarizeEmployees(employeeStats), [employeeStats]);
   const compensatedOverview = useMemo(
     () => buildCompensatedOverview(compensatedRegistry, recoveredCompensatedLoads),

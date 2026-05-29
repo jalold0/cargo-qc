@@ -168,15 +168,28 @@ export default function DashboardLayout() {
     if (!hasSupabaseEnv) return;
 
     let unsubscribes = [];
+    // Realtime burst debouncer:
+    // Excel import 11K yozuvni 100-100 chunk'larda yuboradi, har biri
+    // postgres_changes event'ini chiqaradi. Hech ajratmasdan o'tkazsak
+    // 120+ marta sahifa re-render bo'ladi. Har jadval uchun alohida
+    // 400ms debouncer — eng so'nggi 400ms'da bitta event dispatch bo'ladi.
+    const debounceTimers = new Map();
+    const proxy = (table) => () => {
+      const prev = debounceTimers.get(table);
+      if (prev) window.clearTimeout(prev);
+      const next = window.setTimeout(() => {
+        debounceTimers.delete(table);
+        window.dispatchEvent(new CustomEvent('cargo-qc-data-changed', {
+          detail: { key: `remote:${table}` },
+        }));
+      }, 400);
+      debounceTimers.set(table, next);
+    };
+
     (async () => {
       try {
         const realtime = await import('../services/supabaseRealtime');
         if (!realtime.isRealtimeEnabled) return;
-        const proxy = (table) => () => {
-          window.dispatchEvent(new CustomEvent('cargo-qc-data-changed', {
-            detail: { key: `remote:${table}` },
-          }));
-        };
         unsubscribes.push(realtime.subscribeToComplaints(proxy('complaints')));
         unsubscribes.push(realtime.subscribeToCompensated(proxy('compensated')));
         unsubscribes.push(realtime.subscribeToAssistantAi(proxy('assistant_ai')));
@@ -191,6 +204,9 @@ export default function DashboardLayout() {
     return () => {
       unsubscribes.forEach((fn) => { try { fn(); } catch {} });
       unsubscribes = [];
+      // Pending realtime debouncer timer'larni tozalash
+      debounceTimers.forEach((t) => window.clearTimeout(t));
+      debounceTimers.clear();
     };
   }, []);
 
