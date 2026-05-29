@@ -9,8 +9,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const pkg = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf-8'))
 
 // https://vitejs.dev/config/
-export default defineConfig(({ mode }) => ({
+export default defineConfig(({ mode, command }) => ({
   plugins: [react()],
+
+  // Dev va build cache'larni alohida ushlab turish — `npm run build`
+  // bilan parallel ishlaganda bir-birining `.vite/deps`'ini buzmaydi.
+  cacheDir: command === 'build' ? 'node_modules/.vite-build' : 'node_modules/.vite',
 
   // App version'ni UI'da o'qish uchun (__APP_VERSION__ global)
   define: {
