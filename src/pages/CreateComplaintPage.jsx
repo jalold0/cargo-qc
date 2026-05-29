@@ -103,12 +103,16 @@ export default function CreateComplaintPage() {
 
     const result = addOtkEntries(entries, { actor: user });
     if (!result.inserted) {
-      toast.error(t('duplicateTrackBlocked'));
+      toast.error('Saqlashda xatolik');
       return;
     }
 
+    // Takror treklar endi bloklanmaydi — har biri o'z kiritganiga yoziladi
+    const repeatedCount = result.repeated || 0;
     toast.success(
-      `${result.inserted} ${t('readyTracks')}${result.skippedDuplicates ? `. ${result.skippedDuplicates} ${t('duplicateSkipped')}` : ''}`
+      repeatedCount > 0
+        ? `${result.inserted} ta trek saqlandi (${repeatedCount} ta takror — sizning hisobingizga)`
+        : `${result.inserted} ${t('readyTracks')}`
     );
     navigate('/complaints');
   };

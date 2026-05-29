@@ -99,6 +99,9 @@ function normalizeEntry(entry) {
     customerName: String(safe.customerName || '').trim(),
     note: String(safe.note || ''),
     status: String(safe.status || 'qabul_qilindi'),
+    isRepeat: Boolean(safe.isRepeat),
+    repeatOfId: safe.repeatOfId || null,
+    repeatIndex: Number(safe.repeatIndex) || 0,
     createdAt: safe.createdAt || new Date().toISOString(),
     updatedAt: safe.updatedAt || new Date().toISOString(),
   };
@@ -325,15 +328,31 @@ export function createWarehouseReturn(payload) {
     return { ok: false, reason: 'track_required' };
   }
 
-  // Dublikat tekshirish (oxirgi 30 kun ichida)
+  // ============================================================
+  // Takror trek — BLOKLAMAYMIZ. Foydalanuvchi explicit ravishda
+  // bir xil trekni qayta kiritsa, har ikkala yozuv saqlanadi va
+  // har biri o'z kiritganiga (responsible) hisoblanadi. Sababi: bitta
+  // yukni omborga olib kelish + skladdagi muammosini hal qilish kabi
+  // ikki bosqichli ishlar ikkita hodimning vaqtini oladi.
+  // ------------------------------------------------------------
+  // Lekin isRepeat=true flag bilan markirovka qilamiz, takror
+  // ro'yxatida ko'rinishi uchun. repeatOfId — birinchi yozuv ID'si.
+  // ============================================================
   const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
-  const duplicate = items.find(
+  const earlier = items.find(
     (item) =>
       item.trackCode === entry.trackCode &&
       new Date(item.returnDate).getTime() > thirtyDaysAgo,
   );
-  if (duplicate) {
-    return { ok: false, reason: 'duplicate', existing: duplicate };
+  if (earlier) {
+    entry.isRepeat = true;
+    entry.repeatOfId = earlier.repeatOfId || earlier.id;
+    const repeats = items.filter(
+      (item) =>
+        item.trackCode === entry.trackCode &&
+        (item.repeatOfId === entry.repeatOfId || item.id === entry.repeatOfId),
+    );
+    entry.repeatIndex = repeats.length;
   }
 
   const next = [entry, ...items];
@@ -341,21 +360,27 @@ export function createWarehouseReturn(payload) {
   scheduleRemoteSync(entry);
   markCompensatedAsFoundIfPresent(entry);
 
-  return { ok: true, entry };
+  return { ok: true, entry, repeated: Boolean(entry.isRepeat), repeatIndex: entry.repeatIndex };
 }
 
 // Bulk yaratish (Excel import yoki textarea uchun)
+//
+// MUHIM: Takror treklar BLOKLANMAYDI — har biri alohida yozuv sifatida
+// saqlanadi (isRepeat=true bilan). Har bir takror trek o'z kiritganiga
+// (responsible) hisoblanadi. Bu hodimlar vaqtini to'g'ri hisoblash uchun.
 export function bulkCreateWarehouseReturns(rows = [], commonFields = {}) {
   const items = getWarehouseReturns();
   const created = [];
   const skipped = [];
-  const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  const repeated = [];
 
+  // Mavjud treklarni ID bo'yicha guruhlash — repeatIndex uchun
   const existingByTrack = new Map();
   items.forEach((item) => {
-    if (item.trackCode && new Date(item.returnDate).getTime() > thirtyDaysAgo) {
-      existingByTrack.set(item.trackCode, item);
-    }
+    const code = String(item.trackCode || '').trim();
+    if (!code) return;
+    if (!existingByTrack.has(code)) existingByTrack.set(code, []);
+    existingByTrack.get(code).push(item);
   });
 
   rows.forEach((row) => {
@@ -364,10 +389,11 @@ export function bulkCreateWarehouseReturns(rows = [], commonFields = {}) {
       skipped.push({ reason: 'empty', row });
       return;
     }
-    if (existingByTrack.has(trackCode)) {
-      skipped.push({ reason: 'duplicate', trackCode });
-      return;
-    }
+
+    const prior = existingByTrack.get(trackCode) || [];
+    const repeatOf = prior.length > 0 ? (prior[0].repeatOfId || prior[0].id) : null;
+    const isRepeat = prior.length > 0;
+    const repeatIndex = prior.length;
 
     const entry = normalizeEntry({
       trackCode,
@@ -378,9 +404,17 @@ export function bulkCreateWarehouseReturns(rows = [], commonFields = {}) {
       note: row?.note || commonFields.note || '',
       returnDate: row?.returnDate || commonFields.returnDate || new Date().toISOString(),
       id: generateId(),
+      isRepeat,
+      repeatOfId: repeatOf,
+      repeatIndex,
     });
+
     created.push(entry);
-    existingByTrack.set(trackCode, entry);
+    if (isRepeat) repeated.push(entry);
+
+    // Yangi treklarni ham guruhga qo'shamiz — keyingi rowlar uchun
+    if (!existingByTrack.has(trackCode)) existingByTrack.set(trackCode, []);
+    existingByTrack.get(trackCode).push(entry);
   });
 
   if (created.length) {
@@ -396,6 +430,7 @@ export function bulkCreateWarehouseReturns(rows = [], commonFields = {}) {
   return {
     ok: true,
     created: created.length,
+    repeated: repeated.length,
     skipped: skipped.length,
     skippedDetails: skipped,
   };
@@ -556,7 +591,13 @@ export function migrateVozvratToWarehouse({ removeFromOtk = false } = {}) {
   }
 
   const items = getWarehouseReturns();
-  const existingTracks = new Set(items.map((it) => String(it.trackCode || '').trim()));
+  const existingByTrack = new Map();
+  items.forEach((item) => {
+    const code = String(item.trackCode || '').trim();
+    if (!code) return;
+    if (!existingByTrack.has(code)) existingByTrack.set(code, []);
+    existingByTrack.get(code).push(item);
+  });
 
   const created = [];
   const skipped = [];
@@ -567,10 +608,12 @@ export function migrateVozvratToWarehouse({ removeFromOtk = false } = {}) {
       skipped.push({ reason: 'no_track' });
       return;
     }
-    if (existingTracks.has(trackCode)) {
-      skipped.push({ reason: 'duplicate', trackCode });
-      return;
-    }
+
+    // Takror trek — bloklamaymiz, isRepeat=true bilan qo'shamiz
+    const prior = existingByTrack.get(trackCode) || [];
+    const isRepeat = prior.length > 0;
+    const repeatOf = isRepeat ? (prior[0].repeatOfId || prior[0].id) : null;
+    const repeatIndex = prior.length;
 
     const warehouseEntry = normalizeEntry({
       id: generateId(),
@@ -582,9 +625,13 @@ export function migrateVozvratToWarehouse({ removeFromOtk = false } = {}) {
       customerName: entry.customer || '',
       note: entry.comment || entry.note || '',
       status: 'qabul_qilindi',
+      isRepeat,
+      repeatOfId: repeatOf,
+      repeatIndex,
     });
     created.push(warehouseEntry);
-    existingTracks.add(trackCode);
+    if (!existingByTrack.has(trackCode)) existingByTrack.set(trackCode, []);
+    existingByTrack.get(trackCode).push(warehouseEntry);
   });
 
   if (created.length) {

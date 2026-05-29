@@ -213,14 +213,14 @@ export default function WarehousePage() {
       responsible: user?.full_name || user?.username || '',
     });
     if (!result.ok) {
-      if (result.reason === 'duplicate') {
-        toast.error(`Bu trek (${form.trackCode}) yaqinda omborga kiritilgan`);
-      } else {
-        toast.error("Yozuvni saqlashda xato");
-      }
+      toast.error("Yozuvni saqlashda xato");
       return;
     }
-    toast.success("Omborga qaytdi");
+    if (result.repeated) {
+      toast.success(`Takror — ${result.repeatIndex || 1}-marta kiritildi (sizning hisobingizga yozildi)`);
+    } else {
+      toast.success("Omborga qaytdi");
+    }
     setForm({ ...INITIAL_FORM });
     setCreateOpen(false);
   };
@@ -265,7 +265,7 @@ export default function WarehousePage() {
     };
     const result = bulkCreateWarehouseReturns(rows, commonWithUser);
     toast.success(
-      `${result.created} ta trek qo'shildi${result.skipped ? ` · ${result.skipped} ta o'tkazib yuborildi` : ''}`,
+      `${result.created} ta trek qo'shildi${result.repeated ? ` · ${result.repeated} ta takror` : ''}${result.skipped ? ` · ${result.skipped} ta bo'sh` : ''}`,
     );
     setBulkTracks('');
     setBulkCommon({ problemType: '', note: '' });
@@ -388,7 +388,7 @@ export default function WarehousePage() {
       } else {
         const result = bulkCreateWarehouseReturns(importPreview.entries);
         toast.success(
-          `${result.created} ta trek qo'shildi${result.skipped ? ` · ${result.skipped} ta o'tkazib yuborildi` : ''}`,
+          `${result.created} ta trek qo'shildi${result.repeated ? ` · ${result.repeated} ta takror` : ''}${result.skipped ? ` · ${result.skipped} ta bo'sh` : ''}`,
         );
       }
       setImportPreview(null);

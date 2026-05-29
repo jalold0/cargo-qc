@@ -1734,29 +1734,36 @@ export function addOtkEntries(entries, options = {}) {
   const next = applyPriorityRules([...accepted, ...current]);
   saveOtkEntries(next);
   const actor = resolveActorMeta(options.actor, normalized[0]);
+
+  // Har bir qabul qilingan yozuv uchun audit log
+  // Takror treklar `repeat_added` action-i bilan, originallar `create` bilan
   appendAuditLogs(
     accepted.map((entry) =>
-      createAuditLog('create', entry, actor, {
-        message: `${entry.trackCode} trek kiritildi`,
-      })
+      createAuditLog(
+        entry.isRepeat ? 'repeat_added' : 'create',
+        entry,
+        actor,
+        {
+          message: entry.isRepeat
+            ? `${entry.trackCode} — takror ${entry.repeatIndex || 1}-marta kiritildi (${actor?.fullName || 'hodim'})`
+            : `${entry.trackCode} trek kiritildi`,
+          details: entry.isRepeat
+            ? { repeatOfId: entry.repeatOfId, repeatIndex: entry.repeatIndex }
+            : undefined,
+        }
+      )
     )
   );
-  if (duplicates.length) {
-    appendAuditLogs([
-      createAuditLog('duplicate_skipped', duplicates[0], actor, {
-        message: `${duplicates.length} ta takror trek kiritilmadi`,
-        details: {
-          tracks: duplicates.map((entry) => entry.trackCode),
-        },
-      }),
-    ]);
-  }
 
   return {
     items: next,
     inserted: accepted.length,
-    skippedDuplicates: duplicates.length,
-    duplicateTracks: duplicates.map((entry) => entry.trackCode),
+    // Takror treklar endi BLOK QILINMAYDI — har biri o'z hisobiga yoziladi
+    repeated: duplicates.length,
+    repeatedTracks: duplicates.map((entry) => entry.trackCode),
+    // Eski API moslashishi uchun — endi 0
+    skippedDuplicates: 0,
+    duplicateTracks: [],
   };
 }
 
@@ -2840,14 +2847,34 @@ export function findTrackConflicts(trackCodes = [], options = {}) {
     .sort((a, b) => b.totalCount - a.totalCount || a.trackCode.localeCompare(b.trackCode));
 }
 
+// ============================================================
+// splitEntriesByActiveTrackConflicts — endi takror treklarni BLOKLAMAYDI.
+// ------------------------------------------------------------
+// Foydalanuvchi explicit ravishda takror trek kiritsa, har bir nusxa
+// alohida yozuv sifatida qabul qilinadi va `isRepeat=true` markirovka
+// qilinadi. Birinchi yozuv original deb qoldiriladi (isRepeat=false),
+// keyingilari takror sifatida belgilanadi. Sababi: bitta trekni har xil
+// hodimlar har xil bosqichda ko'rishi mumkin (skladdan vozvrat olib
+// kelish, mijozga tel qilish, muammosini hal qilish) — har birining
+// vaqti alohida hisoblanishi kerak.
+//
+// `repeatOfId` — eng birinchi yozuvning ID'siga ishora qiladi,
+// `repeatIndex` — necha nchi takror ekanini ko'rsatadi (0=original).
+// `duplicates` qaytariladi (audit log uchun), lekin endi `accepted`
+// ichida ham ular bor.
+// ============================================================
 function splitEntriesByActiveTrackConflicts(entries, currentEntries = []) {
-  const activeTrackKeys = new Set(
-    currentEntries
-      .filter((entry) => !isCompensatedProblemType(entry.problemType))
-      .map((entry) => normalizeTrackCode(entry.trackCode))
-      .filter(Boolean)
-  );
-  const seenIncoming = new Set();
+  // Mavjud yozuvlarni trek bo'yicha guruhlash — repeatOfId va repeatIndex
+  // ni to'g'ri belgilash uchun
+  const existingByTrack = new Map();
+  currentEntries.forEach((entry) => {
+    if (isCompensatedProblemType(entry.problemType)) return;
+    const key = normalizeTrackCode(entry.trackCode);
+    if (!key) return;
+    if (!existingByTrack.has(key)) existingByTrack.set(key, []);
+    existingByTrack.get(key).push(entry);
+  });
+
   const accepted = [];
   const duplicates = [];
 
@@ -2858,14 +2885,24 @@ function splitEntriesByActiveTrackConflicts(entries, currentEntries = []) {
       return;
     }
 
-    if (activeTrackKeys.has(trackKey) || seenIncoming.has(trackKey)) {
-      duplicates.push(entry);
-      return;
+    const prior = existingByTrack.get(trackKey) || [];
+    if (prior.length > 0) {
+      // Takror — markirovka qilamiz, lekin qabul qilamiz
+      const original = prior[0];
+      const enriched = {
+        ...entry,
+        isRepeat: true,
+        repeatOfId: original.repeatOfId || original.id,
+        repeatIndex: prior.length,
+      };
+      accepted.push(enriched);
+      duplicates.push(enriched);
+      prior.push(enriched);
+    } else {
+      // Birinchi yozuv — original
+      accepted.push(entry);
+      existingByTrack.set(trackKey, [entry]);
     }
-
-    seenIncoming.add(trackKey);
-    activeTrackKeys.add(trackKey);
-    accepted.push(entry);
   });
 
   return { accepted, duplicates };
