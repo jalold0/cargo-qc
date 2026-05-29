@@ -454,6 +454,40 @@ export default function DashboardPage() {
   );
 
   // ============================================================
+  // JAMI TREKLAR va HAL QILINGANLAR — Toshkent ombori ham qo'shiladi
+  // ------------------------------------------------------------
+  // Asosiy 4 ta KPI Toshkent ombori treklarini ham hisoblaydi (sana
+  // filtri bo'yicha). Foydalanuvchi: "Toshkent ombori jami treklarga
+  // qo'shilib chiqsin, alohida bo'limda ham tursin".
+  // ============================================================
+  // (warehouseStats memo'si pastda — bu yerda foydalanish uchun
+  // forward reference qilamiz; useMemo dependency sifatida pastdagi memo'ga
+  // qaramaymiz, balki to'g'ridan-to'g'ri warehouseReturns'ni o'qiymiz)
+  const augmentedSummary = useMemo(() => {
+    if (!summary) return summary;
+
+    // Sana filtriga moslab warehouse'larni hisoblash
+    const fromTime = dateRange?.from ? new Date(dateRange.from).getTime() : null;
+    const toTime = dateRange?.to ? new Date(dateRange.to).getTime() + 86_399_000 : null;
+    const filteredWh = (warehouseReturns || []).filter((item) => {
+      const t = new Date(item.returnDate || item.createdAt || 0).getTime();
+      if (fromTime && t < fromTime) return false;
+      if (toTime && t > toTime) return false;
+      return true;
+    });
+
+    // Warehouse barcha yozuvlari — "vozvrat" deb qabul qilingan,
+    // ya'ni "hal qilingan" deb hisoblanadi (omborda saqlangan).
+    const whTotal = filteredWh.length;
+
+    return {
+      ...summary,
+      today_total: (summary.today_total || 0) + whTotal,
+      today_resolved: (summary.today_resolved || 0) + whTotal,
+    };
+  }, [summary, warehouseReturns, dateRange?.from, dateRange?.to]);
+
+  // ============================================================
   // Toshkent ombori statistikasi — bosh sahifa ichidagi mini-dashboard
   // ------------------------------------------------------------
   // CEO/Rahbar uchun: omborga qaytgan yuklarning umumiy holati,
@@ -949,7 +983,7 @@ export default function DashboardPage() {
                     {t(labelKey)}
                   </p>
                   <p className="mt-2 text-3xl font-extrabold tracking-tight text-slate-950 transition-transform duration-300 group-hover:translate-x-0.5 dark:text-white">
-                    {(summary?.[key] || 0).toLocaleString('ru-RU')}
+                    {(augmentedSummary?.[key] || 0).toLocaleString('ru-RU')}
                   </p>
                 </div>
                 <div className={clsx('shrink-0 rounded-xl bg-gradient-to-br p-2.5 text-white shadow-md transition-all duration-300 group-hover:scale-110 group-hover:rotate-3', tone)}>
